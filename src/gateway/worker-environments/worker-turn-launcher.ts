@@ -158,10 +158,15 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
       let identity = resolvePlacementIdentity(claim, current);
       let routablePlacement = current;
       let assertInitialSetupCurrent: (() => void) | undefined;
+      // Every admission wait retains the caller's authority, not only initial setup.
+      const assertAdmissionCurrent = () => {
+        assertRunCurrent?.();
+        assertInitialSetupCurrent?.();
+      };
       let placement: ActiveWorkerPlacement;
       let turnClaim: WorkerSessionTurnClaim;
       for (;;) {
-        assertInitialSetupCurrent?.();
+        assertAdmissionCurrent();
         if (
           ["requested", "provisioning", "syncing", "starting"].includes(routablePlacement.state)
         ) {
@@ -194,6 +199,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
             agentId: identity.agentId,
           });
           routablePlacement = await options.redispatchReclaimed(routablePlacement);
+          assertAdmissionCurrent();
           identity = resolvePlacementIdentity(
             { ...claim, agentId: identity.agentId, sessionKey: identity.sessionKey },
             routablePlacement,
@@ -205,6 +211,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
             sessionId: identity.sessionId,
             ...(turn.abortSignal ? { signal: turn.abortSignal } : {}),
           });
+          assertAdmissionCurrent();
           const refreshed = options.placements.get(identity.sessionId);
           if (!refreshed) {
             throw new Error("Cloud worker placement disappeared after workspace reconciliation");
@@ -236,6 +243,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
               sessionId: identity.sessionId,
               ...(turn.abortSignal ? { signal: turn.abortSignal } : {}),
             });
+            assertAdmissionCurrent();
             const refreshed = options.placements.get(identity.sessionId);
             if (!refreshed) {
               throw new Error("Cloud worker placement disappeared after workspace reconciliation", {
@@ -263,6 +271,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
             ...(turn.abortSignal ? { signal: turn.abortSignal } : {}),
           });
           if (!admitted) {
+            assertAdmissionCurrent();
             const refreshed = options.placements.get(identity.sessionId);
             if (!refreshed) {
               throw new Error("Cloud worker placement disappeared after workspace reconciliation");
@@ -281,9 +290,9 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
       // Placement and session storage own the workspace; caller paths may be stale.
       let workspace: WorkerSessionWorkspace;
       try {
-        assertInitialSetupCurrent?.();
+        assertAdmissionCurrent();
         workspace = await options.resolveWorkspace(identity);
-        assertInitialSetupCurrent?.();
+        assertAdmissionCurrent();
       } catch (error) {
         await releaseClaimIfOwned(options.placements, turnClaim);
         throw error;
