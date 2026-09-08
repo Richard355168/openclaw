@@ -3886,6 +3886,7 @@ export const en: TranslationMap & {
       retry: "Retry",
       frameResolverMissing: "Widget content is unavailable.",
       sandboxUnavailable: "Widget sandbox host is unavailable.",
+      runtimeError: "Script error: {message}",
       frameAuthorizationFailed: "Widget authorization failed after repeated refresh attempts.",
       sandboxOriginRequired:
         "Widget authorization failed after repeated refresh attempts. If the gateway runs behind a reverse proxy or tunnel that does not route the widget sandbox port, set mcp.apps.sandboxOrigin to a dedicated public origin routed to the sandbox listener.",
@@ -4632,7 +4633,6 @@ export const en: TranslationMap & {
     },
     mentions: {
       menu: "Mention a person",
-      loading: "Loading people…",
       empty: "No eligible people found.",
       truncated: "Keep typing to find more people.",
       online: "Online",
@@ -5324,6 +5324,7 @@ export const en: TranslationMap & {
       actions: "Message actions",
       selectionActions: "Selection actions",
       askInSideChat: "Ask in side chat",
+      addToChat: "Add to chat",
       rewind: "Rewind",
       rewindConfirm: "Rewind to before this message?",
       dontAskAgain: "Don't ask again",

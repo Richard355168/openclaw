@@ -470,7 +470,7 @@ describe("worker turn launcher reclaimed placement", () => {
     expect(placements.get(SESSION_ID)).toMatchObject({ state: "reclaimed", turnClaim: null });
   });
 
-  it("rejects non-active placement without falling back to the local loop", async () => {
+  it("rejects setup without a live dispatch owner instead of falling back locally", async () => {
     placements.startDispatch({
       sessionId: SESSION_ID,
       sessionKey: SESSION_KEY,
@@ -493,7 +493,7 @@ describe("worker turn launcher reclaimed placement", () => {
         turn("run-requested"),
         runLocal,
       ),
-    ).rejects.toThrow("Worker turn rejected in placement requested");
+    ).rejects.toThrow("Worker setup has no live dispatch owner.");
     expect(runLocal).not.toHaveBeenCalled();
     expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
   });
