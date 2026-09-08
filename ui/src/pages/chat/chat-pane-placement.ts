@@ -88,6 +88,14 @@ export function resolvePlacementComposer(params: {
     !controls.moving &&
     !controls.restarting &&
     params.reclaimingKey !== params.row.key;
+  const canSendDuringSetup =
+    ["requested", "provisioning", "syncing", "starting"].includes(
+      params.row?.placement?.state ?? "",
+    ) &&
+    !params.startupPending &&
+    !controls.moving &&
+    !controls.restarting &&
+    params.reclaimingKey !== params.row?.key;
   const state = resolvePlacementComposerState({
     ...params,
     moving: controls.moving,
@@ -100,7 +108,7 @@ export function resolvePlacementComposer(params: {
   const failureReason = placement?.state === "failed" ? placement.recoveryError : terminalReason;
   const common = {
     state,
-    blocksSend: state.kind !== "ready" && !canSendDuringWorkspaceSync,
+    blocksSend: state.kind !== "ready" && !canSendDuringWorkspaceSync && !canSendDuringSetup,
     busyMessage,
     diskSpace: placement?.state === "active" ? placement.diskSpace : undefined,
     runError: failureReason

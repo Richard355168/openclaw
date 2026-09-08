@@ -25,6 +25,7 @@ import {
   requireActivePlacement,
   resolvePlacementIdentity,
   waitForPendingWorkerResult,
+  waitForInitialWorkerPlacement,
 } from "./worker-turn-admission.js";
 import { executeWorkerTurn } from "./worker-turn-execution.js";
 import {
@@ -50,6 +51,10 @@ type WorkerTurnLauncherOptions = {
   ) => Promise<WorkerSessionWorkspace>;
   reconcileActivePlacement: (environmentId: string) => Promise<void>;
   workspaceOperations: WorkerWorkspaceOperationCoordinator;
+  waitForInitialPlacement?: (
+    placement: WorkerSessionPlacementRecord,
+    signal?: AbortSignal,
+  ) => Promise<WorkerSessionPlacementRecord>;
   redispatchReclaimed: (placement: ReclaimedWorkerPlacement) => Promise<ActiveWorkerPlacement>;
   prepareAcceptedWorkspacePublication?: (claim: WorkerSessionTurnClaim) => Promise<void>;
   publishAcceptedWorkspace?: (claim: WorkerSessionTurnClaim) => Promise<void>;
@@ -134,7 +139,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
     async executeLocalTurn<T>(claim: LocalTurnPlacementClaim, runLocal: () => Promise<T>) {
       return await executeLocalTurn({ claim, placements: options.placements, runLocal });
     },
-    async executeTurn(claim, inputTurn, runLocal, onAdmitted) {
+    async executeTurn(claim, inputTurn, runLocal, onAdmitted, assertRunCurrent) {
       let turn = inputTurn;
       const current = options.placements.get(claim.sessionId);
       if (!current && turn.modelRun === true && !claim.sessionKey?.trim()) {
@@ -152,9 +157,35 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
         );
       let identity = resolvePlacementIdentity(claim, current);
       let routablePlacement = current;
+      let assertInitialSetupCurrent: (() => void) | undefined;
       let placement: ActiveWorkerPlacement;
       let turnClaim: WorkerSessionTurnClaim;
       for (;;) {
+        assertInitialSetupCurrent?.();
+        if (
+          ["requested", "provisioning", "syncing", "starting"].includes(routablePlacement.state)
+        ) {
+          if (!options.waitForInitialPlacement) {
+            throw new Error(
+              "Worker setup has no live dispatch owner. Wait for recovery or explicitly retry setup.",
+            );
+          }
+          emitAgentRunStatusEvent({
+            runId: claim.runId,
+            phase: "provisioning_environment",
+            sessionKey: identity.sessionKey,
+            agentId: identity.agentId,
+          });
+          const ready = await waitForInitialWorkerPlacement({
+            placements: options.placements,
+            placement: routablePlacement,
+            turn,
+            wait: options.waitForInitialPlacement,
+            assertRunCurrent,
+          });
+          routablePlacement = ready.placement;
+          assertInitialSetupCurrent = ready.assertCurrent;
+        }
         if (routablePlacement.state === "reclaimed") {
           emitAgentRunStatusEvent({
             runId: claim.runId,
@@ -250,7 +281,9 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
       // Placement and session storage own the workspace; caller paths may be stale.
       let workspace: WorkerSessionWorkspace;
       try {
+        assertInitialSetupCurrent?.();
         workspace = await options.resolveWorkspace(identity);
+        assertInitialSetupCurrent?.();
       } catch (error) {
         await releaseClaimIfOwned(options.placements, turnClaim);
         throw error;

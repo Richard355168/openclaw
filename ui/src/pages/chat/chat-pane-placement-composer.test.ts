@@ -56,7 +56,7 @@ describe("chat placement composer presentation", () => {
     const result = presentation(placementSession(state));
 
     expect(result.state.kind).toBe(kind);
-    expect(result.blocksSend).toBe(kind !== "ready");
+    expect(result.blocksSend).toBe(state === "draining" || state === "reconciling");
     expect(result.busyMessage).toBe(busyMessage ?? null);
   });
 
@@ -77,6 +77,10 @@ describe("chat placement composer presentation", () => {
   );
 
   it.each([
+    { state: "syncing", operation: "reclaimingKey", message: "Stopping session…" },
+    { state: "syncing", operation: "restartingKey", message: "Restarting session…" },
+    { state: "syncing", operation: "movingKey", message: "Finishing session move…" },
+    { state: "syncing", operation: "placementMove", message: "Finishing session move…" },
     { state: "draining", message: "Finishing session move…" },
     { state: "reconciling", message: "Finishing session move…" },
     { state: "active", operation: "reclaimingKey", message: "Stopping session…" },
@@ -96,6 +100,12 @@ describe("chat placement composer presentation", () => {
 
     expect(result.blocksSend).toBe(true);
     expect(result.busyMessage).toBe(message);
+  });
+
+  it("keeps an unfinished New Session submission blocked during setup", () => {
+    expect(presentation(placementSession("syncing"), { startupPending: true }).blocksSend).toBe(
+      true,
+    );
   });
 
   it("keeps move reconciliation blocked with truthful copy", () => {

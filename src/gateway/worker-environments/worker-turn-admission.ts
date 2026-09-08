@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
-import type { LocalTurnPlacementClaim } from "../../agents/session-placement-admission.js";
+import type {
+  SessionPlacementTurnParams,
+  LocalTurnPlacementClaim,
+} from "../../agents/session-placement-admission.js";
 import { withSessionPlacementForcedTerminalSettlement } from "../../agents/session-placement-forced-terminal-settlement.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import { createAbortError } from "../../infra/abort-signal.js";
 import { SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS } from "../../sessions/session-lifecycle-admission.js";
+import { matchesWorkerPlacementTarget } from "./placement-reclaim-contract.js";
 import { projectWorkerSessionTurnClaim } from "./placement-record.js";
 import type {
   WorkerSessionPlacementRecord,
@@ -48,6 +52,62 @@ export async function waitForPendingWorkerResult(params: {
     );
   }
 }
+/** Join live setup without admitting work against a stale session or destination. */
+export async function waitForInitialWorkerPlacement(params: {
+  placements: WorkerSessionPlacementStore;
+  placement: WorkerSessionPlacementRecord;
+  turn: SessionPlacementTurnParams;
+  wait: (
+    placement: WorkerSessionPlacementRecord,
+    signal?: AbortSignal,
+  ) => Promise<WorkerSessionPlacementRecord>;
+  assertRunCurrent?: () => void;
+}): Promise<{ placement: ActiveWorkerPlacement; assertCurrent: () => void }> {
+  const identity = resolvePlacementIdentity(params.turn, params.placement);
+  const target = {
+    ...identity,
+    storePath: params.turn.sessionTarget?.storePath ?? resolveSessionStorePathForScope(identity),
+  };
+  const original = loadSessionEntryReadOnly(target);
+  const assertSessionCurrent = () => {
+    params.turn.abortSignal?.throwIfAborted();
+    params.assertRunCurrent?.();
+    const current = loadSessionEntryReadOnly(target);
+    if (
+      !original ||
+      !current ||
+      current.sessionId !== identity.sessionId ||
+      current.archivedAt !== undefined ||
+      current.lifecycleRevision !== original.lifecycleRevision ||
+      current.activeWriterRunId !== original.activeWriterRunId
+    ) {
+      throw createAbortError("Session changed while waiting for worker setup");
+    }
+  };
+  assertSessionCurrent();
+  const completed = await params.wait(params.placement, params.turn.abortSignal);
+  // Setup completion is a notification, not authority: read the durable owner again.
+  assertSessionCurrent();
+  const assertCurrent = () => {
+    assertSessionCurrent();
+    const current = params.placements.get(identity.sessionId);
+    if (
+      !current ||
+      !matchesWorkerPlacementTarget(current, completed) ||
+      current.sessionKey !== identity.sessionKey ||
+      current.agentId !== identity.agentId ||
+      current.executionMode !== params.placement.executionMode
+    ) {
+      throw createAbortError("Worker placement changed while waiting for setup");
+    }
+  };
+  assertCurrent();
+  return {
+    placement: requireActivePlacement(params.placements.get(identity.sessionId)!),
+    assertCurrent,
+  };
+}
+
 const CURRENT_WORKER_BUILD_REMEDIATION =
   "redispatch the session so its worker can bootstrap the current build before retrying.";
 
