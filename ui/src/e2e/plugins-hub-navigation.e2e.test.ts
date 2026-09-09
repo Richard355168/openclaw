@@ -5,6 +5,10 @@ import { beforeEach, expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { takeControlUiViewportScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import { installMockGateway, waitForControlUiRoute } from "../test-helpers/control-ui-e2e.ts";
+import {
+  discoveryCategories,
+  discoveryResult,
+} from "../test-helpers/plugins-e2e-fixtures.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({
@@ -57,6 +61,8 @@ const methodResponses = {
     diagnostics: [],
     mutationAllowed: true,
   },
+  "plugins.catalog.browse": discoveryResult,
+  "plugins.catalog.categories": discoveryCategories,
   "skills.proposals.historyStatus": {
     hasScanned: false,
     hasMore: false,
@@ -159,7 +165,12 @@ suite.define(() => {
     const context = await createContext({ height: 768, width: 1366 });
     const page = await context.newPage();
     await installMockGateway(page, {
-      featureMethods: ["config.get", "plugins.list"],
+      featureMethods: [
+        "config.get",
+        "plugins.list",
+        "plugins.catalog.browse",
+        "plugins.catalog.categories",
+      ],
       methodResponses,
     });
 
@@ -170,7 +181,7 @@ suite.define(() => {
       expect(`${location.pathname}${location.search}${location.hash}`).toBe(
         "/plugins?query=calendar#featured",
       );
-      await page.getByRole("heading", { name: "Installed plugins", exact: true }).waitFor();
+      await page.getByRole("searchbox", { name: "Search plugins", exact: true }).waitFor();
     } finally {
       await context.close();
     }
@@ -191,6 +202,8 @@ suite.define(() => {
           "agents.list",
           "config.get",
           "plugins.list",
+          "plugins.catalog.browse",
+          "plugins.catalog.categories",
           "skills.proposals.historyStatus",
           "skills.proposals.list",
           "skills.status",
@@ -206,7 +219,7 @@ suite.define(() => {
         });
         await page.evaluate(() => document.fonts.ready.then(() => undefined));
         await waitForControlUiRoute(page, { pathname: "/plugins", routeId: "plugins" });
-        await page.getByRole("heading", { name: "Installed plugins" }).waitFor();
+        await page.getByRole("searchbox", { name: "Search plugins", exact: true }).waitFor();
         const pluginsHeader = await headerGeometry(page);
         expect(pluginsHeader.title).toBe("Plugins");
         await expectHeaderCopy(page, "plugins");
