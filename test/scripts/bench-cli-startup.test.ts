@@ -24,7 +24,7 @@ describe("bench-cli-startup", () => {
   const memoryTempDirs = useAutoCleanupTempDirTracker(afterEach);
 
   it.each(["warning", "ca", "windows"])(
-    "attributes RSS to the runtime through the actual %s respawn plan",
+    "preserves legacy RSS and opts into runtime RSS through the actual %s respawn plan",
     (mode) => {
       const tmpDir = memoryTempDirs.make("openclaw-cli-rss-respawn-");
       const entryPath = join(tmpDir, "entry.mjs");
@@ -61,58 +61,74 @@ if (isMainThread && !runtime) {
 }
 `,
       );
+      for (const runtimeRss of [false, true]) {
+        const result = runBenchmarkCli([
+          "--entry",
+          entryPath,
+          "--case",
+          "health",
+          "--runs",
+          "1",
+          "--warmup",
+          "0",
+          "--json",
+          ...(runtimeRss ? ["--runtime-rss"] : []),
+        ]);
+        expect(result.status, result.stderr).toBe(0);
+        const report = JSON.parse(result.stdout);
+        const sample = report.primary.cases[0].samples[0];
+        expect(sample.maxRssMb).toBe(runtimeRss ? 32 : 64);
+        if (!runtimeRss) {
+          expect(report.primary).not.toHaveProperty("memoryMetric");
+          expect(sample).not.toHaveProperty("memory");
+          continue;
+        }
+        expect(report.primary.memoryMetric).toBe("cli-runtime-max-rss-v1");
+        expect(sample.memory.processes).toHaveLength(2);
+        const runtime = sample.memory.processes.find(
+          (record: { role: string }) => record.role === "runtime",
+        );
+        const launcher = sample.memory.processes.find(
+          (record: { role: string }) => record.role === "launcher",
+        );
+        expect(runtime).toMatchObject({
+          pid: sample.memory.runtimePid,
+          parentPid: launcher.pid,
+          metricKind: "process-high-water-rss",
+          maxRssBytes: 32 * 1024 * 1024,
+        });
+        expect(launcher.maxRssBytes).toBe(64 * 1024 * 1024);
+      }
+    },
+  );
+
+  it("excludes silent-entry RSS telemetry from first output only with runtime RSS enabled", () => {
+    const tmpDir = memoryTempDirs.make("openclaw-cli-rss-silent-");
+    const entryPath = join(tmpDir, "entry.mjs");
+    writeFileSync(entryPath, "");
+    for (const runtimeRss of [false, true]) {
       const result = runBenchmarkCli([
         "--entry",
         entryPath,
         "--case",
-        "health",
+        "version",
         "--runs",
         "1",
         "--warmup",
         "0",
         "--json",
+        ...(runtimeRss ? ["--runtime-rss"] : []),
       ]);
       expect(result.status, result.stderr).toBe(0);
-      const report = JSON.parse(result.stdout);
-      const sample = report.primary.cases[0].samples[0];
-      expect(sample.maxRssMb).toBe(32);
-      expect(report.primary.memoryMetric).toBe("cli-runtime-max-rss-v1");
-      expect(sample.memory.processes).toHaveLength(2);
-      const runtime = sample.memory.processes.find(
-        (record: { role: string }) => record.role === "runtime",
-      );
-      const launcher = sample.memory.processes.find(
-        (record: { role: string }) => record.role === "launcher",
-      );
-      expect(runtime).toMatchObject({
-        pid: sample.memory.runtimePid,
-        parentPid: launcher.pid,
-        metricKind: "process-high-water-rss",
-        maxRssBytes: 32 * 1024 * 1024,
-      });
-      expect(launcher.maxRssBytes).toBe(64 * 1024 * 1024);
-    },
-  );
-
-  it("does not count RSS telemetry as first output from a silent entry", () => {
-    const tmpDir = memoryTempDirs.make("openclaw-cli-rss-silent-");
-    const entryPath = join(tmpDir, "entry.mjs");
-    writeFileSync(entryPath, "");
-    const result = runBenchmarkCli([
-      "--entry",
-      entryPath,
-      "--case",
-      "version",
-      "--runs",
-      "1",
-      "--warmup",
-      "0",
-      "--json",
-    ]);
-    expect(result.status, result.stderr).toBe(0);
-    const sample = JSON.parse(result.stdout).primary.cases[0].samples[0];
-    expect(sample.maxRssMb).toBeGreaterThan(0);
-    expect(sample.firstOutputMs).toBeNull();
+      const sample = JSON.parse(result.stdout).primary.cases[0].samples[0];
+      expect(sample.maxRssMb).toBeGreaterThan(0);
+      if (runtimeRss) {
+        expect(sample.firstOutputMs).toBeNull();
+      } else {
+        expect(sample.firstOutputMs).toBeGreaterThan(0);
+        expect(sample).not.toHaveProperty("memory");
+      }
+    }
   });
 
   it("selects the same runtime when its launcher exits first", () => {
@@ -138,6 +154,7 @@ if (runtime) {
 `,
     );
     const result = runBenchmarkCli([
+      "--runtime-rss",
       "--entry",
       entryPath,
       "--case",
@@ -188,6 +205,7 @@ if (process.env.FIXTURE_RUNTIME === "1") {
 `,
       );
       const result = runBenchmarkCli([
+        "--runtime-rss",
         "--entry",
         entryPath,
         "--case",
@@ -250,6 +268,7 @@ console.log("runtime ready");
       );
       symlinkSync(launcher, alias);
       const result = runBenchmarkCli([
+        "--runtime-rss",
         "--entry",
         alias,
         "--case",
@@ -480,6 +499,7 @@ try {
         ],
       };
       const result = runBenchmarkCli([
+        "--runtime-rss",
         "--compare-baseline",
         baselinePath,
         "--compare-candidate",
@@ -499,6 +519,7 @@ try {
       };
       writeFileSync(candidatePath, JSON.stringify(attributed), "utf8");
       const incompatible = runBenchmarkCli([
+        "--runtime-rss",
         "--compare-baseline",
         baselinePath,
         "--compare-candidate",

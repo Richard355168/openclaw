@@ -145,6 +145,7 @@ type CliOptions = {
   runs: number;
   warmup: number;
   timeoutMs: number;
+  runtimeRss: boolean;
   json: boolean;
   output?: string;
   cpuProfDir?: string;
@@ -157,6 +158,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_TIMEOUT_KILL_GRACE_MS = 1_000;
 const TIMEOUT_KILL_GRACE_MS = resolveTimeoutKillGraceMs(process.env);
 const DEFAULT_ENTRY = "openclaw.mjs";
+const MAX_RSS_MARKER = "__OPENCLAW_MAX_RSS_KB__=";
 
 function resolveTimeoutKillGraceMs(env: NodeJS.ProcessEnv): number {
   const raw = env.VITEST ? env.OPENCLAW_TEST_CLI_STARTUP_TIMEOUT_KILL_GRACE_MS : undefined;
@@ -181,7 +183,7 @@ const VALUE_FLAGS = new Set([
   "--timeout-ms",
   "--warmup",
 ]);
-const BOOLEAN_FLAGS = new Set(["--help", "--json"]);
+const BOOLEAN_FLAGS = new Set(["--help", "--json", "--runtime-rss"]);
 
 const COMMAND_CASES: readonly CommandCase[] = [
   {
@@ -755,6 +757,31 @@ function buildRssHook(tmpDir: string): string {
   const rssHookPath = path.join(tmpDir, "measure-rss.mjs");
   writeFileSync(
     rssHookPath,
+    [
+      "process.on('exit', () => {",
+      "  const usage = typeof process.resourceUsage === 'function' ? process.resourceUsage() : null;",
+      `  if (usage && typeof usage.maxRSS === 'number') console.error('${MAX_RSS_MARKER}' + String(usage.maxRSS));`,
+      "});",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  return rssHookPath;
+}
+
+function parseMaxRssMb(stderr: string): number | null {
+  const matches = [...stderr.matchAll(new RegExp(`^${MAX_RSS_MARKER}(\\d+)\\s*$`, "gm"))];
+  const lastMatch = matches.at(-1);
+  if (!lastMatch?.[1]) {
+    return null;
+  }
+  return Number(lastMatch[1]) / 1024;
+}
+
+function buildRuntimeRssHook(tmpDir: string): string {
+  const rssHookPath = path.join(tmpDir, "measure-rss.mjs");
+  writeFileSync(
+    rssHookPath,
     `import { writeFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { isMainThread } from "node:worker_threads";
@@ -921,6 +948,7 @@ async function runSample(params: {
   entry: string;
   commandCase: CommandCase;
   timeoutMs: number;
+  runtimeRss: boolean;
   cpuProfDir?: string;
   heapProfDir?: string;
   rssHookPath: string;
@@ -955,7 +983,9 @@ async function runSample(params: {
   let forceKillAt: number | null = null;
   let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
   const maxOutputLength = 32 * 1024 * 1024;
-  const memoryDirectory = mkdtempSync(path.join(path.dirname(params.rssHookPath), "sample-"));
+  const memoryDirectory = params.runtimeRss
+    ? mkdtempSync(path.join(path.dirname(params.rssHookPath), "sample-"))
+    : undefined;
 
   try {
     return await new Promise<Sample>((resolve) => {
@@ -972,11 +1002,15 @@ async function runSample(params: {
           OPENCLAW_HIDE_BANNER: "1",
           NO_COLOR: "1",
           FORCE_COLOR: "0",
-          OPENCLAW_BENCH_MEMORY: JSON.stringify({
-            directory: memoryDirectory,
-            entries: memoryInvocationEntries(params.entry),
-            args: params.commandCase.args,
-          }),
+          ...(memoryDirectory
+            ? {
+                OPENCLAW_BENCH_MEMORY: JSON.stringify({
+                  directory: memoryDirectory,
+                  entries: memoryInvocationEntries(params.entry),
+                  args: params.commandCase.args,
+                }),
+              }
+            : {}),
         },
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -991,15 +1025,19 @@ async function runSample(params: {
           forceKillTimer = null;
         }
         const ms = Number(process.hrtime.bigint() - started) / 1e6;
-        const memory = readSampleMemory(memoryDirectory, proc.pid);
-        const runtimeRss = memory.processes.find(
+        const memory = memoryDirectory ? readSampleMemory(memoryDirectory, proc.pid) : undefined;
+        const runtimeRss = memory?.processes.find(
           (record) => record.role === "runtime",
         )?.maxRssBytes;
         resolve({
           ms,
           firstOutputMs,
-          maxRssMb: runtimeRss == null ? null : runtimeRss / 1024 / 1024,
-          memory,
+          maxRssMb: memory
+            ? runtimeRss == null
+              ? null
+              : runtimeRss / 1024 / 1024
+            : parseMaxRssMb(stderr),
+          ...(memory ? { memory } : {}),
           startedAt: startedAt.toISOString(),
           endedAt: new Date().toISOString(),
           ...(timedOut ? { timedOut } : {}),
@@ -1070,7 +1108,9 @@ async function runSample(params: {
       });
     });
   } finally {
-    rmSync(memoryDirectory, { recursive: true, force: true });
+    if (memoryDirectory) {
+      rmSync(memoryDirectory, { recursive: true, force: true });
+    }
     if (ownsRunRoot) {
       rmSync(runRoot, { recursive: true, force: true });
     }
@@ -1131,6 +1171,7 @@ async function runCase(params: {
   runs: number;
   warmup: number;
   timeoutMs: number;
+  runtimeRss: boolean;
   cpuProfDir?: string;
   heapProfDir?: string;
   rssHookPath: string;
@@ -1296,6 +1337,7 @@ async function buildSuiteResult(params: {
       runs: params.options.runs,
       warmup: params.options.warmup,
       timeoutMs: params.options.timeoutMs,
+      runtimeRss: params.options.runtimeRss,
       cpuProfDir: params.options.cpuProfDir,
       heapProfDir: params.options.heapProfDir,
       rssHookPath: params.rssHookPath,
@@ -1324,7 +1366,7 @@ async function buildSuiteResult(params: {
   }
   return {
     entry: params.entry,
-    memoryMetric: CLI_RUNTIME_MEMORY_METRIC,
+    ...(params.options.runtimeRss ? { memoryMetric: CLI_RUNTIME_MEMORY_METRIC } : {}),
     cases,
   };
 }
@@ -1344,6 +1386,7 @@ function parseOptions(): CliOptions {
     runs: parsePositiveInt(parseFlagValue("--runs"), DEFAULT_RUNS, "--runs"),
     warmup: parseNonNegativeInt(parseFlagValue("--warmup"), DEFAULT_WARMUP, "--warmup"),
     timeoutMs: parsePositiveInt(parseFlagValue("--timeout-ms"), DEFAULT_TIMEOUT_MS, "--timeout-ms"),
+    runtimeRss: hasFlag("--runtime-rss"),
     json: hasFlag("--json"),
     output: parseFlagValue("--output"),
     cpuProfDir: parseFlagValue("--cpu-prof-dir"),
@@ -1371,6 +1414,7 @@ Options:
   --compare-candidate <path>   Read a saved JSON report as the candidate and print deltas
   --cpu-prof-dir <dir>         Write V8 CPU profiles for each run
   --heap-prof-dir <dir>        Write V8 heap profiles for each run
+  --runtime-rss                Attribute RSS to the CLI runtime (default: legacy last marker)
   --json                       Emit machine-readable JSON
   --help                       Show this text
 
@@ -1432,7 +1476,7 @@ async function main(): Promise<void> {
     return;
   }
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cli-bench-"));
-  const rssHookPath = buildRssHook(tmpDir);
+  const rssHookPath = options.runtimeRss ? buildRuntimeRssHook(tmpDir) : buildRssHook(tmpDir);
   try {
     const primary = await buildSuiteResult({
       entry: options.entryPrimary,
