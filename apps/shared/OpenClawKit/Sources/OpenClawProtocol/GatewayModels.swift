@@ -22130,6 +22130,7 @@ public struct PluginDiscoveryCategory: Codable, Sendable {
 
 public struct PluginDiscoveryCatalogFacts: Codable, Sendable {
     public let name: String
+    public let packagename: String?
     public let summary: String?
     public let family: AnyCodable?
     public let author: String?
@@ -22145,6 +22146,7 @@ public struct PluginDiscoveryCatalogFacts: Codable, Sendable {
 
     public init(
         name: String,
+        packagename: String? = nil,
         summary: String? = nil,
         family: AnyCodable? = nil,
         author: String? = nil,
@@ -22159,6 +22161,7 @@ public struct PluginDiscoveryCatalogFacts: Codable, Sendable {
         publishedtoclawhub: Bool? = nil)
     {
         self.name = name
+        self.packagename = packagename
         self.summary = summary
         self.family = family
         self.author = author
@@ -22175,6 +22178,7 @@ public struct PluginDiscoveryCatalogFacts: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case name
+        case packagename = "packageName"
         case summary
         case family
         case author
