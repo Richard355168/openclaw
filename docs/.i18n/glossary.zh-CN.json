@@ -3164,6 +3164,30 @@
     "target": "Codex 工作区引导文件"
   },
   {
+    "source": "Gateway and service recovery",
+    "target": "Gateway 与服务恢复"
+  },
+  {
+    "source": "Lint and post-upgrade modes",
+    "target": "Lint 与升级后模式"
+  },
+  {
+    "source": "Structured health check contract",
+    "target": "结构化健康检查契约"
+  },
+  {
+    "source": "Legacy state migration",
+    "target": "旧版状态迁移"
+  },
+  {
+    "source": "SQLite maintenance and session migration",
+    "target": "SQLite 维护与会话迁移"
+  },
+  {
+    "source": "Other checks and repairs",
+    "target": "其他检查与修复"
+  },
+  {
     "source": "Update status and run history",
     "target": "更新状态与运行历史"
   },
