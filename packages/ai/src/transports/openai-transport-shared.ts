@@ -203,7 +203,7 @@ export type MutableAssistantOutput = Omit<AssistantMessage, "content" | "usage">
   };
 };
 
-export type OpenAICompatibleChoice = ChatCompletionChunk["choices"][number] & {
+type OpenAICompatibleChoice = ChatCompletionChunk["choices"][number] & {
   // Some compatible providers attach usage per choice instead of per chunk.
   usage?: ChatCompletionChunk["usage"];
   // Some compatible providers stream a complete message in place of delta.
