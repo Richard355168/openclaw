@@ -29,6 +29,7 @@ import {
 } from "../../../lib/chat/tool-cards.ts";
 import { type EmbedSandboxMode, resolveToolDisplay } from "../../../lib/chat/tool-display.ts";
 import "../../../styles/chat/reply-preview.css";
+import "./chat-clawhub-card.ts";
 import { isPendingSendMessage } from "../chat-thread-items.ts";
 import type { LinkFaviconFetcher } from "../link-favicon-loader.ts";
 import { workspaceResultConflictFromTranscript } from "../workspace-conflict.ts";
@@ -296,6 +297,7 @@ export function renderGroupedMessage(
   const assistantViewBlocks = normalizedMessage.content.filter(
     (item): item is Extract<MessageContentItem, { type: "canvas" }> => item.type === "canvas",
   );
+  const clawHubCards = normalizedMessage.content.filter((item) => item.type === "clawhub");
   const extractedThinking =
     opts.showReasoning && role === "assistant" ? extractThinkingCached(message) : null;
   const reasoningMarkdown = extractedThinking ? `_Reasoning:_\n\n${extractedThinking}` : null;
@@ -337,6 +339,7 @@ export function renderGroupedMessage(
     omittedMedia.length === 0 &&
     visibleAttachments.length === 0 &&
     assistantViewBlocks.length === 0 &&
+    clawHubCards.length === 0 &&
     !normalizedMessage.replyTarget
   ) {
     return nothing;
@@ -439,6 +442,16 @@ export function renderGroupedMessage(
   const toolRenderOptions = { ...opts, messageKey, onOpenSidebar };
   // Collapsed tool results must not load attachments or render hidden markdown.
   const renderBody = () => html`
+    ${
+      sourceRole === "assistant"
+        ? clawHubCards.map(
+            (card) => html`<openclaw-chat-clawhub-card
+              .recommendation=${card}
+              .agentId=${opts.agentId}
+            ></openclaw-chat-clawhub-card>`,
+          )
+        : nothing
+    }
     ${renderPairingQrExpiryNotices(expiredPairingQrCount)}
     ${renderMessageImages(images, imageRenderOptions)} ${renderOmittedMedia(omittedMedia)}
     ${renderAssistantAttachments(
