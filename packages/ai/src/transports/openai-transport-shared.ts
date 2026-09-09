@@ -203,6 +203,49 @@ export type MutableAssistantOutput = Omit<AssistantMessage, "content" | "usage">
   };
 };
 
+export type OpenAICompatibleChoice = ChatCompletionChunk["choices"][number] & {
+  // Some compatible providers attach usage per choice instead of per chunk.
+  usage?: ChatCompletionChunk["usage"];
+  // Some compatible providers stream a complete message in place of delta.
+  message?: ChatCompletionChunk["choices"][number]["delta"];
+};
+
+export type OpenAICompatibleChatCompletionChunk = Omit<ChatCompletionChunk, "choices"> & {
+  choices: OpenAICompatibleChoice[];
+};
+
+// Minimum length for a text delta to be considered a cumulative full-text replay.
+// Short exact repeats (e.g. "Ha" after "Ha") are plausible model output and must
+// keep flowing; a delta that restates the entire message so far is not.
+const CUMULATIVE_TEXT_DELTA_REPLAY_MIN_CHARS = 8;
+
+/**
+ * Recognizes the provider-quirk frame that restates the entire accumulated
+ * visible text of the message inside a single text delta. `text_delta` is
+ * additive by contract (`AssistantMessageEvent`; consumers rebuild text by
+ * replaying deltas from the latest start/end checkpoint), so appending such a
+ * frame doubles live output. Guarding at the producer keeps every downstream
+ * consumer on a single additive accumulation path.
+ */
+export function createCumulativeReplayGuard(enabled: boolean) {
+  let messageVisibleText = "";
+  return {
+    /** Mirrors a visible text piece appended to the assistant message. */
+    observe(text: string): void {
+      messageVisibleText += text;
+    },
+    /** True when the frame restates the entire accumulated text (only when enabled). */
+    shouldDrop(text: string): boolean {
+      return (
+        enabled &&
+        text.length >= CUMULATIVE_TEXT_DELTA_REPLAY_MIN_CHARS &&
+        text.length === messageVisibleText.length &&
+        text === messageVisibleText
+      );
+    },
+  };
+}
+
 export function parseOpenAICompletionsUsage(
   rawUsage: NonNullable<ChatCompletionChunk["usage"]> & {
     cost?: unknown;

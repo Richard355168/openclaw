@@ -35,30 +35,16 @@ import {
   createModelStreamCooperativeScheduler,
   isOpenAICompletionsThinkingEnabled,
   parseOpenAICompletionsUsage,
+  createCumulativeReplayGuard,
   readOpenAICompletionsContentDeltas,
   readOpenAICompletionsReasoningBatch,
   throwIfModelStreamAborted,
   type MutableAssistantOutput,
+  type OpenAICompatibleChatCompletionChunk,
   type OpenAICompletionsContentDelta as CompletionsReasoningDelta,
   type OpenAICompletionsTextSource,
   type OpenAIModeModel,
 } from "./openai-transport-shared.js";
-
-type OpenAICompatibleChoice = ChatCompletionChunk["choices"][number] & {
-  // Some compatible providers attach usage per choice instead of per chunk.
-  usage?: ChatCompletionChunk["usage"];
-  // Some compatible providers stream a complete message in place of delta.
-  message?: ChatCompletionChunk["choices"][number]["delta"];
-};
-
-type OpenAICompatibleChatCompletionChunk = Omit<ChatCompletionChunk, "choices"> & {
-  choices: OpenAICompatibleChoice[];
-};
-
-// Minimum length for a text delta to be considered a cumulative full-text replay.
-// Short exact repeats (e.g. "Ha" after "Ha") are plausible model output and must
-// keep flowing; a delta that restates the entire message so far is not.
-const CUMULATIVE_TEXT_DELTA_REPLAY_MIN_CHARS = 8;
 
 type CompletionsStreamOptions = {
   signal?: AbortSignal;
@@ -109,7 +95,7 @@ export async function processCompletionsStream(
   const directMode = options?.mode === "direct";
   const emitReasoning = options?.emitReasoning ?? true;
   const compat = getCompat(model as OpenAIModeModel);
-  const dropCumulativeTextDeltaReplays = compat.dropCumulativeTextDeltaReplays === true;
+  const replayGuard = createCumulativeReplayGuard(compat.dropCumulativeTextDeltaReplays);
   const visibleReasoningDetailTypes = new Set(compat.visibleReasoningDetailTypes);
   const shouldFilterDeepSeekDsmlText = !directMode && compat.thinkingFormat === "deepseek";
   const deepSeekTextFilter = shouldFilterDeepSeekDsmlText ? createDeepSeekTextFilter() : null;
@@ -132,9 +118,6 @@ export async function processCompletionsStream(
   let directTextBlock: TextBlock | null = null;
   let directThinkingBlock: ThinkingBlock | null = null;
   let currentTextSource: OpenAICompletionsTextSource | undefined;
-  // Mirrors every visible text piece appended below; used by the cumulative-replay
-  // guard to recognize a provider frame that resends the whole text so far.
-  let messageVisibleText = "";
   let pendingInterruptedTextBlock: TextBlock | null = null;
   let confirmedInterruptedTextBlock: TextBlock | null = null;
   let pendingPostToolCallDeltas: CompletionsReasoningDelta[] = [];
@@ -240,7 +223,7 @@ export async function processCompletionsStream(
       pushStreamEvent({ type: "text_start", contentIndex: blockIndex(), partial: output });
     }
     currentBlock.text += text;
-    messageVisibleText += text;
+    replayGuard.observe(text);
     if (pendingInterruptedTextBlock && text.trim()) {
       confirmedInterruptedTextBlock = pendingInterruptedTextBlock;
       pendingInterruptedTextBlock = null;
@@ -553,16 +536,9 @@ export async function processCompletionsStream(
       }
       for (const [contentDeltaIndex, contentDelta] of contentDeltas.entries()) {
         if (contentDelta.kind === "text") {
-          if (
-            dropCumulativeTextDeltaReplays &&
-            contentDelta.text.length >= CUMULATIVE_TEXT_DELTA_REPLAY_MIN_CHARS &&
-            contentDelta.text.length === messageVisibleText.length &&
-            contentDelta.text === messageVisibleText
-          ) {
-            // The provider resent the entire accumulated text inside a single
-            // frame. `text_delta` is additive (consumers rebuild via checkpoint
-            // replay), so appending it would double live output. Drop the frame;
-            // ordinary deltas and short repeats are untouched.
+          // Some providers resend the whole accumulated text as one bare delta;
+          // text_delta is additive, so appending it would double live output.
+          if (replayGuard.shouldDrop(contentDelta.text)) {
             continue;
           }
           const routedDeltas = hasReasoningThinking
