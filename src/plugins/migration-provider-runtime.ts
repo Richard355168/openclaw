@@ -5,6 +5,10 @@ import { withBundledPluginEnablementCompat } from "./bundled-compat.js";
 import { listBundledPluginMetadata } from "./bundled-plugin-metadata.js";
 import { acquirePluginRegistryForInspection } from "./loader.js";
 import { resolveManifestContractRuntimePluginResolution } from "./manifest-contract-runtime.js";
+import {
+  resolveMigrationProviderPublicArtifacts,
+  type MigrationProviderArtifactPlugin,
+} from "./migration-provider-public-artifacts.js";
 import type { PluginRegistry } from "./registry-types.js";
 import { withPluginRuntimeRegistryScope } from "./runtime/gateway-request-scope.js";
 import type { MigrationProviderPlugin } from "./types.js";
@@ -12,6 +16,7 @@ import type { MigrationProviderPlugin } from "./types.js";
 type MigrationProviderPluginResolution = {
   pluginIds: string[];
   bundledCompatPluginIds: string[];
+  publicPlugins: MigrationProviderArtifactPlugin[];
 };
 
 function bindMigrationProviderToRegistry(
@@ -47,6 +52,9 @@ function resolveMigrationProviderPluginResolution(params: {
   });
   const pluginIds = new Set(resolution.pluginIds);
   const bundledCompatPluginIds = new Set(resolution.bundledCompatPluginIds);
+  const publicPlugins: MigrationProviderArtifactPlugin[] = resolution.plugins.filter(
+    (plugin) => plugin.origin === "global" && pluginIds.has(plugin.id),
+  );
 
   // Install migration can persist a deliberately pruned bundled-plugin index.
   // Migration contracts still need manifest discovery to repair older indexes.
@@ -54,12 +62,19 @@ function resolveMigrationProviderPluginResolution(params: {
     const providerIds = plugin.manifest.contracts?.migrationProviders ?? [];
     if (
       providerIds.length === 0 ||
-      (params.providerId && !providerIds.includes(params.providerId))
+      (params.providerId && !providerIds.includes(params.providerId)) ||
+      publicPlugins.some((owner) => owner.id === plugin.manifest.id)
     ) {
       continue;
     }
     pluginIds.add(plugin.manifest.id);
     bundledCompatPluginIds.add(plugin.manifest.id);
+    publicPlugins.push({
+      id: plugin.manifest.id,
+      origin: "bundled",
+      rootDir: plugin.rootDir,
+      contracts: { migrationProviders: providerIds },
+    });
   }
 
   return {
@@ -67,6 +82,7 @@ function resolveMigrationProviderPluginResolution(params: {
     bundledCompatPluginIds: [...bundledCompatPluginIds].toSorted((left, right) =>
       left.localeCompare(right),
     ),
+    publicPlugins,
   };
 }
 
@@ -102,6 +118,15 @@ export async function withPluginMigrationProviders<T>(
     return await run(mergeMigrationProviders(activeProviders, []));
   }
   const resolution = resolveMigrationProviderPluginResolution(params);
+  if (params.providerId) {
+    const providers = resolveMigrationProviderPublicArtifacts({
+      plugins: resolution.publicPlugins,
+      providerId: params.providerId,
+    });
+    if (providers.length > 0) {
+      return await run(mergeMigrationProviders(activeProviders, providers));
+    }
+  }
   if (
     resolution.pluginIds.length === 0 ||
     getLoadedRuntimePluginRegistry({ requiredPluginIds: resolution.pluginIds })

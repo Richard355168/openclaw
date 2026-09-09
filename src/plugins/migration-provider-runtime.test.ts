@@ -1,10 +1,15 @@
 // Covers migration provider runtime hooks supplied by plugins.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { clearPluginMetadataLifecycleCaches } from "./plugin-metadata-lifecycle.js";
 import type { PluginRegistry } from "./registry-types.js";
 import { createEmptyPluginRegistry } from "./registry.js";
 import { getPluginRuntimeGatewayRequestScope } from "./runtime/gateway-request-scope.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 type MockManifestRegistry = {
   plugins: Array<Record<string, unknown>>;
@@ -149,6 +154,55 @@ describe("migration provider runtime", () => {
     withPluginMigrationProviders = runtime.withPluginMigrationProviders;
   });
 
+  it("uses the selected installed public artifact without acquiring or replacing a registry", async () => {
+    const rootDir = tempDirs.make("openclaw-migration-artifact-");
+    fs.writeFileSync(
+      path.join(rootDir, "migration-provider-api.js"),
+      `
+      export function buildMigrationProvider() {
+        return { id: "fixture-import", label: "Installed fixture",
+          plan: async () => ({ providerId: "fixture-import", source: "selected-install", items: [],
+            summary: { total: 0, planned: 0, migrated: 0, skipped: 0, conflicts: 0, errors: 0, sensitive: 0 } }),
+          apply: async (_ctx, plan) => plan };
+      }
+    `,
+    );
+    const active = createEmptyPluginRegistry();
+    mocks.resolveRuntimePluginRegistry.mockReturnValue(active);
+    mocks.loadPluginRegistrySnapshot.mockReturnValue(
+      createMockPluginIndex([{ pluginId: "fixture", origin: "global", enabled: true }]),
+    );
+    mocks.loadPluginManifestRegistry.mockReturnValue({
+      diagnostics: [],
+      plugins: [
+        {
+          id: "fixture",
+          origin: "global",
+          rootDir,
+          contracts: { migrationProviders: ["fixture-import"] },
+        },
+      ],
+    });
+    mocks.listBundledPluginMetadata.mockReturnValue([
+      {
+        rootDir: "/unselected-bundled-fixture",
+        manifest: { id: "fixture", contracts: { migrationProviders: ["fixture-import"] } },
+      },
+    ] as never);
+
+    const label = await withPluginMigrationProviders(
+      {
+        providerId: "fixture-import",
+        cfg: { plugins: { entries: { fixture: { enabled: true } } } },
+      },
+      async (providers) => providers.find((provider) => provider.id === "fixture-import")?.label,
+    );
+
+    expect(label).toBe("Installed fixture");
+    expect(mocks.acquirePluginRegistryForInspection).not.toHaveBeenCalled();
+    expect(active.migrationProviders).toEqual([]);
+  });
+
   it("loads bundled migration providers through compat config", async () => {
     mocks.loadPluginRegistrySnapshot.mockReturnValue(
       createMockPluginIndex([
@@ -193,6 +247,7 @@ describe("migration provider runtime", () => {
           id: "migrate-hermes",
           contracts: { migrationProviders: ["hermes"] },
         },
+        rootDir: "/missing-migration-fixture",
       },
     ] as never);
 
@@ -329,6 +384,7 @@ describe("migration provider runtime", () => {
           id: "migrate-hermes",
           contracts: { migrationProviders: ["hermes"] },
         },
+        rootDir: "/missing-migration-fixture",
       },
     ] as never);
 
