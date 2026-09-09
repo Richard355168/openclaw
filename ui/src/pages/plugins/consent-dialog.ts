@@ -87,7 +87,7 @@ export function renderArtTile(
     style=${`--plugins-art-a:${from};--plugins-art-b:${to}`}
     aria-hidden="true"
   >
-    ${monogram ? html`<span>${monogram}</span>` : icons.puzzle}
+    ${monogram ? html`<span>${monogram}</span>` : icons.plug}
   </span>`;
 }
 
