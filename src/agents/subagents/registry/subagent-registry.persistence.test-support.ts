@@ -26,6 +26,44 @@ import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 type SessionStore = Record<string, Record<string, unknown>>;
 
+export function expectSubagentFixtureFields(
+  value: unknown,
+  expected: Record<string, unknown>,
+): void {
+  if (!value || typeof value !== "object") {
+    throw new Error("expected fields object");
+  }
+  const record = value as Record<string, unknown>;
+  for (const [key, expectedValue] of Object.entries(expected)) {
+    expect(record[key], key).toEqual(expectedValue);
+  }
+}
+
+export function createPersistedEndedSubagentRunFixture(params: {
+  runId: string;
+  childSessionKey: string;
+  task: string;
+  cleanup: "keep" | "delete";
+}) {
+  const now = Date.now();
+  return {
+    version: 2,
+    runs: {
+      [params.runId]: {
+        runId: params.runId,
+        childSessionKey: params.childSessionKey,
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: params.task,
+        cleanup: params.cleanup,
+        createdAt: now - 2,
+        startedAt: now - 1,
+        endedAt: now,
+      },
+    },
+  };
+}
+
 export function expectDeferredSubagentAnnouncement(
   entry: SubagentRunRecord | undefined,
   runId: string,

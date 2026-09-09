@@ -351,6 +351,23 @@ describe("subagent registry restart recovery", () => {
     expect(mocks.entries[childSessionKey]!.abortedLastRun).toBe(true);
   });
 
+  it("defers an unmarked legacy row with one bounded ownership diagnostic", async () => {
+    const entry = run({ taskOwnershipPolicy: undefined });
+
+    await expect(recover(entry)).resolves.toEqual({ status: "deferred" });
+    await expect(recover(entry)).resolves.toEqual({ status: "deferred" });
+
+    expect(dispatchAgent).not.toHaveBeenCalled();
+    expect(mocks.readSessionMessages).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      "subagent restart recovery is waiting for authoritative task ownership",
+      expect.objectContaining({
+        reason: "has no persisted task ownership policy",
+        action: "inspect the subagent and task records before retrying the subagent request",
+      }),
+    );
+  });
+
   it("preserves the abort marker when dispatch fails", async () => {
     dispatchAgent.mockRejectedValueOnce(new Error("runtime not ready"));
     await expect(recover(run())).resolves.toEqual({

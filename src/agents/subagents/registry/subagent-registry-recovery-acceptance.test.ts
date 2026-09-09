@@ -51,6 +51,7 @@ async function setupAcceptedRecovery(persistedPhase: "attempted" | "consumed" = 
     cleanup: "keep",
     spawnMode: "session",
     expectsCompletionMessage: true,
+    taskRowOwnership: "required",
   });
   const source = subagentRuns.get("acceptance-predecessor")!;
   const task = findTaskByRunId(source.runId)!;
@@ -332,6 +333,7 @@ it.each([
       task: "Newer work owns this session",
       cleanup: "keep",
       expectsCompletionMessage: false,
+      taskRowOwnership: "required",
     });
     expect(subagentRuns.get(state.source.runId)).toBe(state.source);
   }

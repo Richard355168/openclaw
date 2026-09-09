@@ -2021,6 +2021,7 @@ describe("gateway agent handler chat.abort integration", () => {
           expectsCompletionMessage,
           collect,
           queued,
+          taskRowOwnership: "required",
         });
       }
 

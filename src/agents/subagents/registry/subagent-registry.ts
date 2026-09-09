@@ -511,8 +511,8 @@ const subagentRunManager = createSubagentRunManager({
 export const replaceSubagentRunAfterSteerCore = subagentRunManager.replaceSubagentRunAfterSteer;
 export const claimSubagentRunKill = subagentRunManager.claimSubagentRunKill;
 export const releaseSubagentRunKillClaim = subagentRunManager.releaseSubagentRunKillClaim;
-export function registerSubagentRun(params: RegisterSubagentRunParams): void {
-  subagentRunManager.registerSubagentRun({
+export function registerSubagentRun(params: RegisterSubagentRunParams) {
+  return subagentRunManager.registerSubagentRun({
     ...params,
     gatewayContextResolver: params.gatewayContextResolver ?? activeGatewayContextResolver,
   });

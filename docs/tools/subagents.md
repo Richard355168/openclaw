@@ -759,6 +759,11 @@ If saving an accepted recovery temporarily fails, the Gateway retries adopting
 that same execution into its original task. Cancellation, replacement by a newer
 run, or another Gateway restart prevents that adoption.
 
+Rows restored from older releases without an authoritative task-ownership policy
+are deferred rather than guessed. Inspect the sub-agent with `/subagents info`
+and its task record before retrying the request; restart recovery does not create
+or adopt a task on behalf of an unmarked row.
+
 For sub-agents that announce completion, OpenClaw also attempts a notice to the
 original requester: “Resumed your interrupted task after the Gateway restart.”
 Failed or suppressed notices are retried without launching another recovery

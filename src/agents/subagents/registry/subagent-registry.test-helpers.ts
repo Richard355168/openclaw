@@ -27,6 +27,7 @@ import {
   createSubagentRunRecord,
   type SubagentRunRecordOverrides,
 } from "../../subagent-test-fixtures.test-helpers.js";
+import { registerSubagentRun as registerSubagentRunCore } from "./subagent-registry.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 type RegistryTestApi = {
@@ -73,6 +74,17 @@ function getRegistryTestApi(): RegistryTestApi {
 
 export function resetSubagentRegistryForTests(opts?: { persist?: boolean }) {
   getRegistryTestApi().resetSubagentRegistryForTests(opts);
+}
+
+type TestRegistrationParams = Omit<
+  Parameters<typeof registerSubagentRunCore>[0],
+  "taskRowOwnership"
+> & {
+  taskRowOwnership?: Parameters<typeof registerSubagentRunCore>[0]["taskRowOwnership"];
+};
+
+export function registerSubagentRun(params: TestRegistrationParams) {
+  return registerSubagentRunCore({ taskRowOwnership: "required", ...params });
 }
 
 export function addSubagentRunForTests(entry: SubagentRunRecordOverrides) {

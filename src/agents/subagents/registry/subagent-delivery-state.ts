@@ -8,6 +8,12 @@ import type {
 export function normalizeSubagentRunState(entry: SubagentRunRecord): SubagentRunRecord {
   const taskRunId = typeof entry.taskRunId === "string" ? entry.taskRunId.trim() : "";
   entry.taskRunId = taskRunId || undefined;
+  entry.taskOwnershipPolicy =
+    entry.taskOwnershipPolicy === "core_required" ||
+    entry.taskOwnershipPolicy === "gateway_best_effort" ||
+    entry.taskOwnershipPolicy === "custom"
+      ? entry.taskOwnershipPolicy
+      : undefined;
   const requesterTurnRunId =
     typeof entry.requesterTurnRunId === "string" ? entry.requesterTurnRunId.trim() : "";
   entry.requesterTurnRunId = requesterTurnRunId || undefined;
@@ -25,6 +31,8 @@ export function normalizeSubagentRunState(entry: SubagentRunRecord): SubagentRun
     ? entry.deleteCleanupDispatchedAt
     : undefined;
   entry.suppressCompletionDelivery = entry.suppressCompletionDelivery === true ? true : undefined;
+  entry.taskTerminalProjection =
+    entry.taskTerminalProjection === "preserve_existing" ? "preserve_existing" : undefined;
   entry.terminalOwner =
     entry.terminalOwner === "interrupted-recovery" &&
     Number.isFinite(entry.execution.endedAt) &&
