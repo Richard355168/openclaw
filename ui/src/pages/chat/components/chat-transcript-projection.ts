@@ -104,9 +104,7 @@ export function projectChatTranscript(
   const searchFiltering = state.searchOpen && Boolean(state.searchQuery.trim());
   const archiveActor = activeSession?.archivedBy;
   const archiveLabel = archiveActor?.id
-    ? t("sessionsView.archivedBy", {
-        name: archiveActor.label ?? archiveActor.id,
-      })
+    ? t("sessionsView.archivedBy", { name: archiveActor.label ?? archiveActor.id })
     : activeSession?.archiveReason
       ? formatSessionArchiveReason(activeSession.archiveReason)
       : undefined;
@@ -295,7 +293,7 @@ export function projectChatTranscript(
     onOpenSidebar: props.onOpenSidebar,
     sessionKey: props.sessionKey,
     boardProvider: props.boardProvider,
-    agentId: props.fullMessageAgentId,
+    agentId: props.currentAgentId ?? props.fullMessageAgentId,
     runActive: props.runActive,
     onOpenWorkspaceFile: props.onOpenWorkspaceFile,
     onRequestUpdate: requestUpdate,
@@ -333,6 +331,7 @@ export function projectChatTranscript(
         : null;
     return {
       ...sharedMessageRenderOptions,
+      transcriptVisible: props.transcriptVisible,
       latestBrowserTabs,
       showReasoning,
       showToolCalls: props.showToolCalls,
@@ -352,7 +351,6 @@ export function projectChatTranscript(
       onToggleToolExpanded: toggleToolCardExpanded,
       assistantName: props.assistantName,
       assistantAvatar: assistantIdentity.avatar,
-      agentId: props.currentAgentId ?? props.fullMessageAgentId,
       agents: props.agents,
       senderAgentAvatars: props.senderAgentAvatars,
       mainKey: props.mainKey,
@@ -658,6 +656,7 @@ export function projectChatTranscript(
     JSON.stringify([...latestBrowserTabs]),
     props.sessionKey,
     props.presented,
+    props.transcriptVisible,
     // Invalidate settled rows when spawn metadata arrives, not on activity/title patches.
     avatarPlacement,
     props.boardProvider,

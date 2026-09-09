@@ -9,7 +9,6 @@ import type {
   AgentIdentityResult,
   GatewaySessionRow,
   SessionRunStatus,
-  GatewayThinkingLevelOption,
   FastMode,
   SessionCompactionCheckpoint,
   SessionsListResult,
@@ -29,9 +28,9 @@ import "../../components/web-awesome-popover.ts";
 import { t } from "../../i18n/index.ts";
 import { formatAgentRuntimeLabel } from "../../lib/agents/display.ts";
 import {
-  formatInheritedThinkingLabel,
   formatThinkingOverrideLabel,
   normalizeThinkingOptionValue,
+  resolveChatThinkingSelectState,
 } from "../../lib/chat/thinking.ts";
 import {
   formatDurationCompact,
@@ -45,7 +44,6 @@ import { presenceViewerLabel } from "../../lib/presence-users.ts";
 import { formatSessionTokens } from "../../lib/presenter.ts";
 import { resolveSessionDisplayKind } from "../../lib/session-display.ts";
 import { formatGoalDetail, formatGoalSummary } from "../../lib/session-goal.ts";
-import { sessionModelMatchesDefaults } from "../../lib/session-model-defaults.ts";
 import { isSessionRunActive } from "../../lib/session-run-state.ts";
 import { resolveSessionContextLimit } from "../../lib/sessions/context-budget.ts";
 import { SESSION_DRAG_MIME } from "../../lib/sessions/drag.ts";
@@ -168,7 +166,6 @@ export type SessionsProps = {
   onRestoreCheckpoint: (sessionKey: string, checkpointId: string) => void | Promise<void>;
 };
 
-const DEFAULT_THINK_LEVELS = ["off", "minimal", "low", "medium", "high"] as const;
 const VERBOSE_LEVEL_VALUES = ["", "off", "on", "full"] as const;
 const FAST_LEVEL_VALUES = ["", "auto", "on", "off"] as const;
 const REASONING_LEVELS = ["", "off", "on", "stream"] as const;
@@ -185,30 +182,14 @@ function resolveThinkLevelOptions(
   row: GatewaySessionRow,
   defaults?: SessionsListResult["defaults"],
 ): readonly { value: string; label: string }[] {
-  const modelMatchesDefaults = sessionModelMatchesDefaults(row, defaults);
-  const defaultLabel = formatInheritedThinkingLabel(
-    row.thinkingDefault ?? (modelMatchesDefaults ? defaults?.thinkingDefault : undefined),
-  );
-  const options: readonly GatewayThinkingLevelOption[] = row.thinkingLevels?.length
-    ? row.thinkingLevels
-    : modelMatchesDefaults && defaults?.thinkingLevels?.length
-      ? defaults.thinkingLevels
-      : (row.thinkingOptions?.length
-          ? row.thinkingOptions
-          : modelMatchesDefaults && defaults?.thinkingOptions?.length
-            ? defaults.thinkingOptions
-            : DEFAULT_THINK_LEVELS
-        ).map((label) => ({
-          id: normalizeThinkingOptionValue(label),
-          label,
-        }));
-  return [
-    { value: "", label: defaultLabel },
-    ...options.map((option) => ({
-      value: normalizeThinkingOptionValue(option.id),
-      label: formatThinkingOverrideLabel(option.id, option.label),
-    })),
-  ];
+  const state = resolveChatThinkingSelectState({
+    catalog: [],
+    session: row,
+    defaults,
+    sessionKey: row.key,
+    sessionsResult: null,
+  });
+  return [{ value: "", label: state.inherited.displayLabel }, ...state.options];
 }
 
 function withCurrentLabeledOption(
