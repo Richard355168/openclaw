@@ -1,6 +1,8 @@
 import { createServer } from "node:http";
+import type { StreamFn, StreamFunction } from "@openclaw/llm-core";
 import { afterAll, describe, expect, it } from "vitest";
 import { resetDiagnosticRunActivityForTest } from "../../../../src/logging/diagnostic-run-activity.js";
+import type { OpenAICompletionsOptions } from "../provider-options.js";
 import { streamOpenAICompletions } from "../providers/openai-completions.js";
 import { createOpenAICompletionsTransportStreamFn } from "./openai-completions-transport.js";
 import { makeCompletionsChunk, makeCompletionsModel } from "./openai-completions.test-support.js";
@@ -17,8 +19,12 @@ type ReplayCase = {
   expectedText: string;
 };
 
+type CompletionsStreamCreator =
+  | StreamFn
+  | StreamFunction<"openai-completions", OpenAICompletionsOptions>;
+
 async function runStream(
-  createStream: typeof streamOpenAICompletions,
+  createStream: CompletionsStreamCreator,
   caseInput: ReplayCase,
 ): Promise<string> {
   const server = createServer((req, res) => {
@@ -46,10 +52,14 @@ async function runStream(
       reasoning: false,
       ...(caseInput.compat ? { compat: caseInput.compat } : {}),
     });
-    const stream = await createStream(
-      model,
-      { messages: [{ role: "user", content: "Stream the text.", timestamp: 1 }] },
-      { apiKey: "synthetic-test-key" },
+    // The managed transport factory satisfies StreamFn, whose return may be the
+    // stream itself rather than a promise; resolve before awaiting uniformly.
+    const stream = await Promise.resolve(
+      createStream(
+        model,
+        { messages: [{ role: "user", content: "Stream the text.", timestamp: 1 }] },
+        { apiKey: "synthetic-test-key" },
+      ),
     );
     const result = await stream.result();
     return result.content
@@ -130,11 +140,11 @@ describe.each([
       chunks: [
         makeCompletionsChunk({ role: "assistant", content: TEXT_A }),
         makeCompletionsChunk({ content: TEXT_B }),
-        makeCompletionsChunk({}, null, {
+        // No `delta` key: the message field is the only content carrier.
+        makeCompletionsChunk(null, null, {
           choices: [
             {
               index: 0,
-              delta: {},
               message: { role: "assistant", content: TEXT_A + TEXT_B },
               finish_reason: null,
             },
@@ -147,6 +157,28 @@ describe.each([
       expectedText: TEXT_A + TEXT_B + TEXT_C,
     });
     expect(text).toBe(TEXT_A + TEXT_B + TEXT_C);
+  });
+
+  it("appends a message-shaped frame equal to the accumulated text when disabled", async () => {
+    const text = await runStream(createStream, {
+      chunks: [
+        makeCompletionsChunk({ role: "assistant", content: TEXT_A }),
+        makeCompletionsChunk({ content: TEXT_B }),
+        makeCompletionsChunk(null, null, {
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: TEXT_A + TEXT_B },
+              finish_reason: null,
+            },
+          ],
+        }),
+        makeCompletionsChunk({ content: TEXT_C }),
+        makeCompletionsChunk({}, "stop"),
+      ],
+      expectedText: TEXT_A + TEXT_B + (TEXT_A + TEXT_B) + TEXT_C,
+    });
+    expect(text).toBe(TEXT_A + TEXT_B + (TEXT_A + TEXT_B) + TEXT_C);
   });
 
   it("continues appending ordinary deltas after a dropped replay while enabled", async () => {
