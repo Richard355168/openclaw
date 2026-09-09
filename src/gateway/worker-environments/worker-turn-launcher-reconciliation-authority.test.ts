@@ -43,6 +43,14 @@ describe("reconciliation continuation authority", () => {
     { mode: "worker-turn", authority: "admitted", revokeAt: "wait" },
     { mode: "remote-exec", authority: "source", revokeAt: "workspace" },
     { mode: "remote-exec", authority: "admitted", revokeAt: "workspace" },
+    { mode: "remote-exec", authority: "source", revokeAt: "tunnel" },
+    { mode: "remote-exec", authority: "admitted", revokeAt: "tunnel" },
+    { mode: "remote-exec", authority: "source", revokeAt: "dispatch" },
+    { mode: "remote-exec", authority: "admitted", revokeAt: "dispatch" },
+    { mode: "remote-exec", authority: "source", revokeAt: "init" },
+    { mode: "remote-exec", authority: "admitted", revokeAt: "init" },
+    { mode: "remote-exec", authority: "source", revokeAt: "write" },
+    { mode: "remote-exec", authority: "admitted", revokeAt: "write" },
     { mode: "remote-exec", authority: "source", revokeAt: "never" },
   ] as const)(
     "$mode checks $authority authority after $revokeAt",
@@ -94,14 +102,25 @@ describe("reconciliation continuation authority", () => {
         }
       };
       // Real attachment commands write to an isolated workspace; only transport is synthetic.
+      const executedCommands: string[][] = [];
       const runWorkspaceCommand = vi.fn<WorkerTunnelHandle["runWorkspaceCommand"]>(
         async (command) => {
+          // Simulate transport readiness yielding before its synchronous dispatch guard.
+          await Promise.resolve();
+          if (revokeAt === "dispatch") {
+            revoke();
+          }
           command.assertCurrent?.();
-          return await runCommandWithTimeout([...command.argv], {
+          executedCommands.push([...command.argv]);
+          const result = await runCommandWithTimeout([...command.argv], {
             cwd: remote,
             input: command.input,
             timeoutMs: 5000,
           });
+          if (revokeAt === command.argv[5]) {
+            revoke();
+          }
+          return result;
         },
       );
       const tunnel: WorkerTunnelHandle = {
@@ -127,7 +146,12 @@ describe("reconciliation continuation authority", () => {
       const environments = {
         ...unusedEnvironments(),
         get: vi.fn(attachedEnvironment),
-        startTunnel: vi.fn(async () => tunnel),
+        startTunnel: vi.fn(async () => {
+          if (revokeAt === "tunnel") {
+            revoke();
+          }
+          return tunnel;
+        }),
       };
       const resolveWorkspace = vi.fn(async () => {
         if (revokeAt === "workspace") {
@@ -183,8 +207,18 @@ describe("reconciliation continuation authority", () => {
         } else {
           await expect(run).rejects.toThrow(/authority/);
           expect(abort.signal.aborted).toBe(false);
-          expect(environments.startTunnel).not.toHaveBeenCalled();
-          expect(runWorkspaceCommand).not.toHaveBeenCalled();
+          const transferred = revokeAt === "init" || revokeAt === "write";
+          expect(environments.startTunnel).toHaveBeenCalledTimes(
+            transferred || revokeAt === "tunnel" || revokeAt === "dispatch" ? 1 : 0,
+          );
+          if (transferred) {
+            expect(executedCommands.map((argv) => argv[5])).toEqual(
+              revokeAt === "init" ? ["init", "cleanup"] : ["init", "write", "cleanup"],
+            );
+          } else {
+            expect(runWorkspaceCommand).toHaveBeenCalledTimes(revokeAt === "dispatch" ? 1 : 0);
+            expect(executedCommands).toEqual([]);
+          }
           expect(runLocal).not.toHaveBeenCalled();
           expect(await readdir(remote)).toEqual([]);
         }

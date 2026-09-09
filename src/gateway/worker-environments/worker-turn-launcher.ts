@@ -351,7 +351,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
           turnClaim,
         };
         return remoteExec
-          ? await executeRemoteExecTurn({ ...executionParams, runLocal })
+          ? await executeRemoteExecTurn({ ...executionParams, runLocal, assertRunCurrent })
           : await executeWorkerTurn(executionParams);
       } catch (error) {
         if (error instanceof StaleWorkerBuildError) {

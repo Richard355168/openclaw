@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { createEmbeddedRunLaneController } from "../../agents/embedded-agent-runner/run/lane-controller.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
-import { AGENT_RUN_RESTART_ABORT_ERROR_CODE } from "../../agents/run-termination.js";
 import { installSessionPlacementAdmissionProvider } from "../../agents/session-placement-admission.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
 import {
@@ -11,6 +10,7 @@ import {
   onAgentEvent as subscribeAgentEvent,
   rotateAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
+import { isAgentRunStaleLifecycleError } from "../../infra/agent-lifecycle-error.js";
 import {
   clearAgentRunContext,
   getAgentRunContext,
@@ -420,7 +420,8 @@ describe("worker turn launcher reclaimed placement", () => {
       const versionBeforeRejectedAdmission = readAgentRunIndexVersion();
 
       resumeWorkspaceResolution.resolve();
-      await expect(pending).rejects.toMatchObject({ code: AGENT_RUN_RESTART_ABORT_ERROR_CODE });
+      // The admission guard rejects before the lane can hand off the stale run.
+      await expect(pending.catch(isAgentRunStaleLifecycleError)).resolves.toBe(true);
       expect(
         getDiagnosticSessionActivitySnapshot({ sessionId: SESSION_ID }).activeWorkKind,
       ).toBeUndefined();
