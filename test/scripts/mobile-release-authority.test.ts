@@ -2658,7 +2658,15 @@ describe("mobile release authority", () => {
           .split("\n")
           .map((value) => Number.parseInt(value, 10));
         expect(processIds).toHaveLength(2);
-        expect(() => process.kill(-processIds[0], 0)).toThrow();
+        const processGroupId = processIds[0];
+        if (
+          typeof processGroupId !== "number" ||
+          !Number.isSafeInteger(processGroupId) ||
+          processGroupId <= 0
+        ) {
+          throw new Error(`Invalid owned process-group ID: ${processGroupId}`);
+        }
+        expect(() => process.kill(-processGroupId, 0)).toThrow();
       };
 
       await exerciseOwnedProcessTree({
