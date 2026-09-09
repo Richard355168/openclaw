@@ -252,4 +252,25 @@ describe.each([
     });
     expect(text).toBe(TEXT_A + TEXT_B + (TEXT_A + TEXT_B) + TEXT_C);
   });
+
+  it("drops a cumulative replay after a visible reasoning detail when enabled", async () => {
+    // Visible reasoning details feed the same block through a second path; the
+    // ledger must include them or a provider that emits both under-protects.
+    const text = await runStream(createStream, {
+      chunks: [
+        makeCompletionsChunk({
+          reasoning_details: [{ type: "response.output_text", text: TEXT_A }],
+        }),
+        makeCompletionsChunk({ content: TEXT_B }),
+        makeCompletionsChunk({ content: TEXT_A + TEXT_B }),
+        makeCompletionsChunk({}, "stop"),
+      ],
+      compat: {
+        dropCumulativeTextDeltaReplays: true,
+        visibleReasoningDetailTypes: ["response.output_text"],
+      },
+      expectedText: TEXT_A + TEXT_B,
+    });
+    expect(text).toBe(TEXT_A + TEXT_B);
+  });
 });

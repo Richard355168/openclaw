@@ -239,11 +239,13 @@ export function createCumulativeReplayGuard(enabled: boolean) {
   let textBlockStartPending = false;
   return {
     /**
-     * Records an accepted text frame and reports whether it was admitted. A
-     * frame restating all accepted text including the current block's content
-     * is a cumulative replay and is not admitted. `opensTextBlock` must be true
-     * when the frame will start a new text block (current block is not text, or
-     * the visible-text source changed).
+     * Records an accepted visible-text frame and reports whether it was
+     * admitted. A frame restating all accepted text including the current
+     * block's content is a cumulative replay and is not admitted. Every
+     * visible-text feeder (content deltas and visible reasoning details) must
+     * route through this seam, or the ledger under-describes the block.
+     * `opensTextBlock` must be true when the frame will start a new text block
+     * (current block is not text, or the visible-text source changed).
      */
     admitTextDelta(text: string, opensTextBlock: boolean): boolean {
       if (opensTextBlock) {
