@@ -178,6 +178,10 @@ class FakeMatrixEvent extends EventEmitter {
     return this.unsigned ?? {};
   }
 
+  getDecryptionPromise(): Promise<void> | null {
+    return null;
+  }
+
   getStateKey(): string | undefined {
     return this.stateKey;
   }
@@ -959,10 +963,9 @@ describe("MatrixClient event bridge", () => {
     matrixJsClient.emit("event", encrypted);
     encrypted.emit("decrypted", encrypted, new Error("missing room key"));
 
-    client.stopSyncWithoutPersist();
     await client.drainPendingDecryptions("test shutdown");
 
-    expect(matrixJsClient.stopClient).toHaveBeenCalledTimes(1);
+    expect(matrixJsClient.stopClient).not.toHaveBeenCalled();
     expect(matrixJsClient.decryptEventIfNeeded).toHaveBeenCalledTimes(1);
     expect(delivered).toEqual(["m.room.message"]);
   });
@@ -1265,7 +1268,7 @@ describe("MatrixClient event bridge", () => {
       expect(encrypted.attemptDecryption).toHaveBeenCalledTimes(1);
       expect(delivered).toEqual(["m.room.message"]);
     } finally {
-      client.stopSyncWithoutPersist();
+      client.stopWithoutPersist();
     }
   });
 
@@ -1399,7 +1402,7 @@ describe("MatrixClient event bridge", () => {
       await Promise.resolve();
       expect(delivered).toEqual(["m.room.message"]);
     } finally {
-      client.stopSyncWithoutPersist();
+      client.stopWithoutPersist();
     }
   });
 
@@ -1561,34 +1564,15 @@ describe("MatrixClient event bridge", () => {
     await startExpectation;
   });
 
-  it("clears stale sync state before a restarted sync session waits for fresh readiness", async () => {
-    matrixJsClient.startClient = vi
-      .fn(async () => {
-        queueMicrotask(() => {
-          matrixJsClient.emit("sync", "PREPARED", null, undefined);
-        });
-      })
-      .mockImplementationOnce(async () => {
-        queueMicrotask(() => {
-          matrixJsClient.emit("sync", "PREPARED", null, undefined);
-        });
-      })
-      .mockImplementationOnce(async () => {});
-
+  it("rejects restarting a fully stopped client and requires a new shared generation", async () => {
     const client = new MatrixClient("https://matrix.example.org", "token");
 
     await client.start();
-    client.stopSyncWithoutPersist();
+    client.stopWithoutPersist();
 
-    vi.useFakeTimers();
-    const restartPromise = client.start();
-    const restartExpectation = expect(restartPromise).rejects.toThrow(
-      "Matrix client did not reach a ready sync state within 30000ms",
+    await expect(client.start()).rejects.toThrow(
+      "Matrix client has been fully stopped and cannot be restarted; acquire a new shared client generation",
     );
-
-    await vi.advanceTimersByTimeAsync(30_000);
-
-    await restartExpectation;
   });
 
   it("replays outstanding invite rooms at startup", async () => {
