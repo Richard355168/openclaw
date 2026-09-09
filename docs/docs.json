@@ -2444,7 +2444,15 @@
                       "cli/reset",
                       "cli/setup",
                       "cli/uninstall",
-                      "cli/update"
+                      "cli/update",
+                      {
+                        "group": "Update",
+                        "pages": [
+                          "cli/update/status-and-history",
+                          "cli/update/repair-and-recovery",
+                          "cli/update/how-updates-run"
+                        ]
+                      }
                     ]
                   },
                   {
