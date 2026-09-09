@@ -221,9 +221,9 @@ export async function processCompletionsStream(
       output.content.push(currentBlock);
       contentBlockIndices.set(currentBlock, output.content.length - 1);
       pushStreamEvent({ type: "text_start", contentIndex: blockIndex(), partial: output });
+      replayGuard.onTextStart();
     }
     currentBlock.text += text;
-    replayGuard.observe(text);
     if (pendingInterruptedTextBlock && text.trim()) {
       confirmedInterruptedTextBlock = pendingInterruptedTextBlock;
       pendingInterruptedTextBlock = null;
@@ -538,7 +538,11 @@ export async function processCompletionsStream(
         if (contentDelta.kind === "text") {
           // Some providers resend the whole accumulated text as one bare delta;
           // text_delta is additive, so appending it would double live output.
-          if (replayGuard.shouldDrop(contentDelta.text)) {
+          // The ledger advances at frame acceptance, before downstream buffering
+          // (post-tool-call queue, reasoning-tag partitioner) can desync it.
+          const opensTextBlock =
+            currentBlock?.type !== "text" || currentTextSource !== contentDelta.source;
+          if (!replayGuard.admitTextDelta(contentDelta.text, opensTextBlock)) {
             continue;
           }
           const routedDeltas = hasReasoningThinking

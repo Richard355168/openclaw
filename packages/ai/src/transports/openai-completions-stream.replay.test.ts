@@ -82,6 +82,27 @@ const replayChunks = (): ReplayChunk[] => [
   makeCompletionsChunk({}, "stop"),
 ];
 
+const toolCallChunk = (): ReplayChunk =>
+  makeCompletionsChunk({
+    tool_calls: [
+      {
+        index: 0,
+        id: "call_replay_probe",
+        type: "function",
+        function: { name: "probe_tool", arguments: "{}" },
+      },
+    ],
+  });
+
+const replayAfterToolCallChunks = (): ReplayChunk[] => [
+  makeCompletionsChunk({ role: "assistant", content: TEXT_A }),
+  toolCallChunk(),
+  makeCompletionsChunk({ content: TEXT_B }),
+  makeCompletionsChunk({ content: TEXT_A + TEXT_B }),
+  makeCompletionsChunk({ content: TEXT_C }),
+  makeCompletionsChunk({}, "stop"),
+];
+
 describe.each([
   { name: "direct", createStream: streamOpenAICompletions },
   { name: "managed", createStream: createOpenAICompletionsTransportStreamFn() },
@@ -193,5 +214,42 @@ describe.each([
       expectedText: TEXT_A + (TEXT_A + TEXT_B),
     });
     expect(text).toBe(TEXT_A + TEXT_A + TEXT_B);
+  });
+
+  it("drops a cumulative replay after a tool call when enabled", async () => {
+    // On the managed transport, post-tool-call text is buffered until the
+    // stream ends, so a ledger that only advances at the append sink compares
+    // against a stale prefix and lets the replay double the output.
+    const text = await runStream(createStream, {
+      chunks: replayAfterToolCallChunks(),
+      compat: { dropCumulativeTextDeltaReplays: true },
+      expectedText: TEXT_A + TEXT_B + TEXT_C,
+    });
+    expect(text).toBe(TEXT_A + TEXT_B + TEXT_C);
+  });
+
+  it("keeps post-tool-call text that repeats earlier output while enabled", async () => {
+    // The repeat opens a new text block (empty checkpoint), so it is not a
+    // cumulative replay of the block it belongs to and must keep flowing.
+    const text = await runStream(createStream, {
+      chunks: [
+        makeCompletionsChunk({ role: "assistant", content: TEXT_A }),
+        toolCallChunk(),
+        makeCompletionsChunk({ content: TEXT_A }),
+        makeCompletionsChunk({ content: TEXT_C }),
+        makeCompletionsChunk({}, "stop"),
+      ],
+      compat: { dropCumulativeTextDeltaReplays: true },
+      expectedText: TEXT_A + TEXT_A + TEXT_C,
+    });
+    expect(text).toBe(TEXT_A + TEXT_A + TEXT_C);
+  });
+
+  it("keeps the historical append behavior after a tool call when disabled", async () => {
+    const text = await runStream(createStream, {
+      chunks: replayAfterToolCallChunks(),
+      expectedText: TEXT_A + TEXT_B + (TEXT_A + TEXT_B) + TEXT_C,
+    });
+    expect(text).toBe(TEXT_A + TEXT_B + (TEXT_A + TEXT_B) + TEXT_C);
   });
 });

@@ -220,28 +220,59 @@ export type OpenAICompatibleChatCompletionChunk = Omit<ChatCompletionChunk, "cho
 const CUMULATIVE_TEXT_DELTA_REPLAY_MIN_CHARS = 8;
 
 /**
- * Recognizes the provider-quirk frame that restates the entire accumulated
- * visible text of the message inside a single text delta. `text_delta` is
- * additive by contract (`AssistantMessageEvent`; consumers rebuild text by
- * replaying deltas from the latest start/end checkpoint), so appending such a
- * frame doubles live output. Guarding at the producer keeps every downstream
- * consumer on a single additive accumulation path.
+ * Recognizes the provider-quirk frame that restates previously accepted text
+ * inside a single text delta. `text_delta` is additive by contract
+ * (`AssistantMessageEvent`; consumers rebuild text by replaying deltas from the
+ * latest start/end checkpoint), so appending such a frame doubles live output.
+ * Guarding at the producer keeps every downstream consumer on a single additive
+ * accumulation path.
+ *
+ * The ledger advances when a frame is accepted, before any downstream buffering
+ * (the post-tool-call queue, the reasoning-tag partitioner, provider text
+ * filters), so the comparison never runs against a stale prefix. The comparison
+ * unit is the current text block: a frame restating only earlier blocks is the
+ * first delta of a new block and must keep flowing.
  */
 export function createCumulativeReplayGuard(enabled: boolean) {
-  let messageVisibleText = "";
+  let acceptedText = "";
+  let textBlockStartLength = 0;
+  let textBlockStartPending = false;
   return {
-    /** Mirrors a visible text piece appended to the assistant message. */
-    observe(text: string): void {
-      messageVisibleText += text;
-    },
-    /** True when the frame restates the entire accumulated text (only when enabled). */
-    shouldDrop(text: string): boolean {
-      return (
+    /**
+     * Records an accepted text frame and reports whether it was admitted. A
+     * frame restating all accepted text including the current block's content
+     * is a cumulative replay and is not admitted. `opensTextBlock` must be true
+     * when the frame will start a new text block (current block is not text, or
+     * the visible-text source changed).
+     */
+    admitTextDelta(text: string, opensTextBlock: boolean): boolean {
+      if (opensTextBlock) {
+        if (!textBlockStartPending) {
+          textBlockStartLength = acceptedText.length;
+          textBlockStartPending = true;
+        }
+      } else {
+        textBlockStartPending = false;
+      }
+      const isCumulativeReplay =
         enabled &&
         text.length >= CUMULATIVE_TEXT_DELTA_REPLAY_MIN_CHARS &&
-        text.length === messageVisibleText.length &&
-        text === messageVisibleText
-      );
+        text.length === acceptedText.length &&
+        text === acceptedText &&
+        acceptedText.length > textBlockStartLength;
+      if (isCumulativeReplay) {
+        log.debug("Dropped a cumulative text delta replay", {
+          deltaLength: text.length,
+          acceptedTextLength: acceptedText.length,
+        });
+        return false;
+      }
+      acceptedText += text;
+      return true;
+    },
+    /** Clears the pending block boundary once the new text block materialized (`text_start`). */
+    onTextStart(): void {
+      textBlockStartPending = false;
     },
   };
 }
