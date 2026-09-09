@@ -147,6 +147,10 @@ export async function processCompletionsStream(
     chunkPushedEvent = true;
     stream.push(event);
   };
+  // Reads the live block state at call time; kept as a closure so the replay
+  // guard's caller sees the declared block union rather than flow narrowing.
+  const opensBlockFor = (source: OpenAICompletionsTextSource | undefined) =>
+    currentBlock?.type !== "text" || currentTextSource !== source;
   const queuePostToolCallDelta = (next: CompletionsReasoningDelta) => {
     const nextBytes = measureUtf8Bytes(next.text);
     if (pendingPostToolCallBytes + nextBytes > MAX_POST_TOOL_CALL_BUFFER_BYTES) {
@@ -540,9 +544,7 @@ export async function processCompletionsStream(
           // text_delta is additive, so appending it would double live output.
           // The ledger advances at frame acceptance, before downstream buffering
           // (post-tool-call queue, reasoning-tag partitioner) can desync it.
-          const opensTextBlock =
-            currentBlock?.type !== "text" || currentTextSource !== contentDelta.source;
-          if (!replayGuard.admitTextDelta(contentDelta.text, opensTextBlock)) {
+          if (!replayGuard.admitTextDelta(contentDelta.text, opensBlockFor(contentDelta.source))) {
             continue;
           }
           const routedDeltas = hasReasoningThinking
