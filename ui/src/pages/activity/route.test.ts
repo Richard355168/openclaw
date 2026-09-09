@@ -49,12 +49,12 @@ describe("resolveActivityRouteData", () => {
   });
 
   it("scopes readable person paths independently of query filters and mounted prefixes", () => {
-    for (const [pathname, search] of [
-      ["/ui/activity/ada-12345678", "?person=ignored&time=30d&q=release"],
-      [
-        "/ui/activity",
-        `?${INTERNAL_ACTIVITY_PATH_PARAM}=%2Fui%2Factivity%2Fada-12345678&person=ignored&time=30d&q=release`,
-      ],
+    for (const { pathname, search } of [
+      { pathname: "/ui/activity/ada-12345678", search: "?person=ignored&time=30d&q=release" },
+      {
+        pathname: "/ui/activity",
+        search: `?${INTERNAL_ACTIVITY_PATH_PARAM}=%2Fui%2Factivity%2Fada-12345678&person=ignored&time=30d&q=release`,
+      },
     ]) {
       expect(loadRoute(search, pathname, "/ui")).toEqual({
         mode: "sessions",
