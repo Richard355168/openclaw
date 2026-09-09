@@ -11,7 +11,7 @@ export {
 export { isPluginProvidersLoadInFlight } from "../plugins/providers.runtime.js";
 
 /** Bare provider callbacks retain borrowed resources until their SDK host closes. */
-export function resolvePluginProviders(params: Parameters<typeof resolvePluginProvidersCore>[0]) {
+function resolvePluginProvidersForSdk(params: Parameters<typeof resolvePluginProvidersCore>[0]) {
   const selected: {
     borrowed?: {
       host: ReturnType<typeof getLegacyPluginSdkResourceHost>;
@@ -40,3 +40,5 @@ export function resolvePluginProviders(params: Parameters<typeof resolvePluginPr
     throw error;
   }
 }
+
+export { resolvePluginProvidersForSdk as resolvePluginProviders };
