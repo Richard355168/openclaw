@@ -255,14 +255,19 @@ describe("openai completions stream", () => {
       {
         push(event) {
           if (event.type === "text_delta" || event.type === "thinking_delta") {
-            emitted.push(event.type);
+            emitted.push(`${event.type}:${event.delta}`);
           }
         },
       },
       { strictReasoningTags: true },
     );
 
-    expect(emitted).toEqual(["thinking_delta", "text_delta", "thinking_delta", "text_delta"]);
+    expect(emitted).toEqual([
+      "thinking_delta:First.",
+      "text_delta:Interim.",
+      "thinking_delta:Second.",
+      "text_delta:Final.",
+    ]);
     expect(output.content.map((block) => block.type)).toEqual([
       "thinking",
       "text",

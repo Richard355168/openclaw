@@ -24,7 +24,10 @@ import {
   type ToolArgumentPreviewSchedule,
 } from "../utils/json-parse.js";
 import { notifyLlmRequestActivity } from "../utils/llm-request-activity.js";
-import { createReasoningTagTextPartitioner } from "../utils/reasoning-tag-text-partitioner.js";
+import {
+  createReasoningTagTextPartitioner,
+  type ReasoningTagTextDelta,
+} from "../utils/reasoning-tag-text-partitioner.js";
 import { withFirstStreamEventTimeout } from "../utils/stream-first-event-timeout.js";
 import { createDeepSeekTextFilter } from "./deepseek-text-filter.js";
 import {
@@ -88,9 +91,9 @@ export async function processCompletionsStream(
   const shouldFilterDeepSeekDsmlText = !directMode && compat.thinkingFormat === "deepseek";
   const deepSeekTextFilter = shouldFilterDeepSeekDsmlText ? createDeepSeekTextFilter() : null;
   const dsmlRecoverer = shouldFilterDeepSeekDsmlText ? createDsmlRecoverer() : null;
-  const reasoningTagTextPartitioner = createReasoningTagTextPartitioner();
+  const tagPartitioner = createReasoningTagTextPartitioner();
   if (options?.strictReasoningTags) {
-    reasoningTagTextPartitioner.markStrict();
+    tagPartitioner.markStrict();
   }
   type ToolCallBlock = {
     type: "toolCall";
@@ -143,7 +146,7 @@ export async function processCompletionsStream(
   const opensTextBlock = (source?: OpenAICompletionsTextSource) =>
     currentBlock?.type !== "text" || currentTextSource !== source;
   const framesSettled = () =>
-    !reasoningTagTextPartitioner.hasPending() &&
+    !tagPartitioner.hasPending() &&
     !dsmlRecoverer?.hasPending() &&
     !deepSeekTextFilter?.hasPending();
   const classifyFrame = (visible: string) =>
@@ -396,12 +399,12 @@ export async function processCompletionsStream(
     appendThinkingDelta({ text: "" });
   };
   const flushReasoningTagTextPartitioner = () => {
-    for (const delta of reasoningTagTextPartitioner.flush()) {
+    for (const delta of tagPartitioner.flush()) {
       appendPartitionedVisibleDelta(delta);
     }
   };
   const sealTextBeforeReasoning = () => {
-    if (currentBlock?.type !== "text" && !reasoningTagTextPartitioner.hasPending()) {
+    if (currentBlock?.type !== "text" && !tagPartitioner.hasPending()) {
       return;
     }
     flushReasoningTagTextPartitioner();
@@ -426,12 +429,12 @@ export async function processCompletionsStream(
         textPhaseRequiresTerminal: true,
       };
     }
-    if (forceStrict || reasoningTagTextPartitioner.hasPending()) {
-      reasoningTagTextPartitioner.markStrict();
+    if (forceStrict || tagPartitioner.hasPending()) {
+      tagPartitioner.markStrict();
     }
     // Let following text finish syntax already owned by the Markdown
     // parser; otherwise packet batching cannot erase a lane boundary.
-    if (!hasFollowingVisibleText || !reasoningTagTextPartitioner.hasPendingSyntax()) {
+    if (!hasFollowingVisibleText || !tagPartitioner.hasPendingSyntax()) {
       sealTextBeforeReasoning();
     }
   };
@@ -537,47 +540,46 @@ export async function processCompletionsStream(
       // sequence. A settled restatement drops its visible pieces while its
       // recovered tool calls still flow; an unsettled segment always flows.
       let plan: DsmlChainStep[] = [];
-      const settleSegment = () => {
-        const admitted = classifyFrame(plan.reduce((text, step) => text + (step.text ?? ""), ""));
-        for (const step of plan) {
-          if (admitted || step.text === undefined) {
-            step.emit();
+      const planRouted = (routed: ReasoningTagTextDelta[]) => {
+        for (const piece of routed) {
+          if (piece.kind !== "text") {
+            continue;
           }
+          planRecoveredText(dsmlRecoverer?.push(piece.text) ?? [textPart(piece.text)], plan);
+        }
+      };
+      const settlePlan = () => {
+        const admitted = classifyFrame(plan.reduce((text, step) => text + (step.text ?? ""), ""));
+        for (const step of plan.filter((candidate) => admitted || candidate.text === undefined)) {
+          step.emit();
         }
         plan = [];
       };
+      const pushContent = (text: string) =>
+        hasReasoningThinking ? tagPartitioner.push(text) : tagPartitioner.pushVisible(text);
       for (const [contentDeltaIndex, contentDelta] of contentDeltas.entries()) {
         if (contentDelta.kind === "text") {
-          const routedDeltas = hasReasoningThinking
-            ? reasoningTagTextPartitioner.push(contentDelta.text)
-            : reasoningTagTextPartitioner.pushVisible(contentDelta.text);
-          for (const routed of routedDeltas) {
-            if (routed.kind === "text") {
-              planRecoveredText(dsmlRecoverer?.push(routed.text) ?? [textPart(routed.text)], plan);
-            }
-          }
+          planRouted(pushContent(contentDelta.text));
         } else {
           // A reasoning part transitions lanes exactly as unguarded flow does:
-          // pending parser input marks strict, buffered text releases into the
-          // pending segment for classification unless following text must
-          // finish syntax the parser already owns, and the seal then runs.
-          const hasFollowingVisibleText = contentDeltaIndex < lastVisibleTextIndex;
-          if (reasoningTagTextPartitioner.hasPending()) {
-            reasoningTagTextPartitioner.markStrict();
+          // pending parser input marks strict, and buffered text releases
+          // unless following text must finish syntax the parser already owns.
+          // The released text settles — classified, then streamed — before the
+          // reasoning content appends, while text the parser still holds
+          // continues into the following segment.
+          if (tagPartitioner.hasPending()) {
+            tagPartitioner.markStrict();
           }
-          if (!hasFollowingVisibleText || !reasoningTagTextPartitioner.hasPendingSyntax()) {
-            for (const delta of reasoningTagTextPartitioner.flush()) {
-              if (delta.kind === "text") {
-                planRecoveredText(dsmlRecoverer?.push(delta.text) ?? [textPart(delta.text)], plan);
-              }
-            }
-            settleSegment();
+          const hasLaterVisible = contentDeltaIndex < lastVisibleTextIndex;
+          if (!hasLaterVisible || !tagPartitioner.hasPendingSyntax()) {
+            planRouted(tagPartitioner.flush());
           }
-          beginReasoning(hasFollowingVisibleText);
+          settlePlan();
+          beginReasoning(hasLaterVisible);
           appendRoutedContentDelta(contentDelta);
         }
       }
-      settleSegment();
+      settlePlan();
       if (!hasReasoningThinking) {
         appendReasoningDeltas(reasoningDeltas);
       }
