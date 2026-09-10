@@ -229,44 +229,64 @@ const CUMULATIVE_TEXT_DELTA_REPLAY_MIN_CHARS = 8;
  *
  * The ledger tracks filtered visible text at the admission seam, so it advances
  * with every released piece and never runs against a stale prefix. The
- * comparison unit is the current text block: a frame restating only earlier
- * blocks is the first delta of a new block and must keep flowing.
+ * comparison unit is one provider frame's whole visible contribution within
+ * the current text block: a frame restating only earlier blocks is the first
+ * delta of a new block and must keep flowing, and a released piece of a frame
+ * that continues must never be classified on its own.
  */
 export function createCumulativeReplayGuard(enabled: boolean) {
   let acceptedText = "";
   let textBlockStartLength = 0;
   let textBlockStartPending = false;
+  const trackBlockBoundary = (opensTextBlock: boolean) => {
+    if (opensTextBlock) {
+      if (!textBlockStartPending) {
+        textBlockStartLength = acceptedText.length;
+        textBlockStartPending = true;
+      }
+    } else {
+      textBlockStartPending = false;
+    }
+  };
+  const restatesAcceptedText = (text: string) =>
+    enabled &&
+    text.length >= CUMULATIVE_TEXT_DELTA_REPLAY_MIN_CHARS &&
+    text.length === acceptedText.length &&
+    text === acceptedText &&
+    acceptedText.length > textBlockStartLength;
   return {
     /**
-     * Records an accepted visible-text piece and reports whether it was
-     * admitted. A piece restating all accepted text including the current
-     * block's content is a cumulative replay and is not admitted. Every
-     * visible-text feeder (content deltas and visible reasoning details) must
-     * route through this seam, or the ledger under-describes the block.
-     * `opensTextBlock` must be true when the piece will start a new text block
-     * (current block is not text, or the visible-text source changed).
-     * `frameComplete` must be false while any upstream stage still buffers
-     * input: a released prefix of an incomplete frame can restate the block
-     * even though the frame itself is not a replay, so equality must not
-     * classify it as one.
+     * Classifies one complete provider frame's visible contribution without
+     * recording it. Returns false when the frame restates all accepted text
+     * including the current block's content; the caller must then drop every
+     * visible piece of the frame. `frameComplete` must be false while the
+     * parser still buffers frame input: a released prefix can restate the
+     * block even though the frame continues, so equality must not classify it
+     * as a replay.
      */
-    admitTextDelta(text: string, opensTextBlock: boolean, frameComplete: boolean): boolean {
-      if (opensTextBlock) {
-        if (!textBlockStartPending) {
-          textBlockStartLength = acceptedText.length;
-          textBlockStartPending = true;
-        }
-      } else {
-        textBlockStartPending = false;
+    classifyFrame(visible: string, opensTextBlock: boolean, frameComplete: boolean): boolean {
+      trackBlockBoundary(opensTextBlock);
+      if (frameComplete && restatesAcceptedText(visible)) {
+        log.debug("Dropped a cumulative text delta replay", {
+          deltaLength: visible.length,
+          acceptedTextLength: acceptedText.length,
+        });
+        return false;
       }
-      const isCumulativeReplay =
-        enabled &&
-        frameComplete &&
-        text.length >= CUMULATIVE_TEXT_DELTA_REPLAY_MIN_CHARS &&
-        text.length === acceptedText.length &&
-        text === acceptedText &&
-        acceptedText.length > textBlockStartLength;
-      if (isCumulativeReplay) {
+      return true;
+    },
+    /**
+     * Records one visible-text piece of an already classified frame. Every
+     * visible-text feeder (content pieces and visible reasoning details) must
+     * route through this seam, or the ledger under-describes the block.
+     * `compare` marks the piece as a complete frame of its own, which may
+     * drop it as a replay. `opensTextBlock` must be true when the piece will
+     * start a new text block (current block is not text, or the visible-text
+     * source changed).
+     */
+    admitTextDelta(text: string, opensTextBlock: boolean, compare: boolean): boolean {
+      trackBlockBoundary(opensTextBlock);
+      if (compare && restatesAcceptedText(text)) {
         log.debug("Dropped a cumulative text delta replay", {
           deltaLength: text.length,
           acceptedTextLength: acceptedText.length,

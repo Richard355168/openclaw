@@ -328,6 +328,37 @@ describe.each([
     });
     expect(text).toBe(`${TEXT_A}${TEXT_A}<b>tail`);
   });
+
+  it("keeps a completed frame whose visible pieces exceed the block while enabled", async () => {
+    // A completed parse can return several visible pieces (reasoning tags
+    // between them). The comparison unit is the whole frame's visible
+    // contribution: the first piece alone restating the block must not drop.
+    const text = await runStream(createStream, {
+      chunks: [
+        makeCompletionsChunk({ role: "assistant", content: TEXT_A }),
+        makeCompletionsChunk({ content: `${TEXT_A}<think>x</think>tail` }),
+        makeCompletionsChunk({}, "stop"),
+      ],
+      compat: { dropCumulativeTextDeltaReplays: true },
+      expectedText: `${TEXT_A}${TEXT_A}tail`,
+    });
+    expect(text).toBe(`${TEXT_A}${TEXT_A}tail`);
+  });
+
+  it("drops a multi-piece frame restating the whole visible block while enabled", async () => {
+    // A replay frame may carry reasoning tags; the frame's visible total
+    // restates the block, so every visible piece of the frame is dropped.
+    const text = await runStream(createStream, {
+      chunks: [
+        makeCompletionsChunk({ role: "assistant", content: TEXT_A + TEXT_B }),
+        makeCompletionsChunk({ content: `${TEXT_A}<think>x</think>${TEXT_B}` }),
+        makeCompletionsChunk({}, "stop"),
+      ],
+      compat: { dropCumulativeTextDeltaReplays: true },
+      expectedText: TEXT_A + TEXT_B,
+    });
+    expect(text).toBe(TEXT_A + TEXT_B);
+  });
 });
 
 describe("managed cumulative text delta replays with DSML recovery", () => {
@@ -344,6 +375,24 @@ describe("managed cumulative text delta replays with DSML recovery", () => {
         makeCompletionsChunk({ role: "assistant", content: TEXT_A }),
         makeCompletionsChunk({ content: `${TEXT_A}<|DSML|tool_c` }),
         makeCompletionsChunk({ content: "alls>x</|DSML|tool_calls>tail" }),
+        makeCompletionsChunk({}, "stop"),
+      ],
+      compat: {
+        dropCumulativeTextDeltaReplays: true,
+        thinkingFormat: "deepseek",
+      },
+      expectedText: `${TEXT_A}${TEXT_A}tail`,
+    });
+    expect(text).toBe(`${TEXT_A}${TEXT_A}tail`);
+  });
+
+  it("keeps a completed frame with a DSML wrapper after the repeated prefix", async () => {
+    // The recovery stage returns several entries for one completed frame; the
+    // frame's visible total exceeds the block, so the repeated prefix stays.
+    const text = await runStream(createOpenAICompletionsTransportStreamFn(), {
+      chunks: [
+        makeCompletionsChunk({ role: "assistant", content: TEXT_A }),
+        makeCompletionsChunk({ content: `${TEXT_A}<|DSML|tool_calls>x</|DSML|tool_calls>tail` }),
         makeCompletionsChunk({}, "stop"),
       ],
       compat: {

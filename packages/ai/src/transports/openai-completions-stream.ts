@@ -147,21 +147,17 @@ export async function processCompletionsStream(
     stream.push(event);
   };
   // The replay ledger tracks filtered visible text and advances as each piece
-  // is released, before the post-tool-call queue can hold it back. Both
-  // visible-text feeders route through this seam; the closures read the
-  // declared block union rather than flow narrowing. Equality only fires for
-  // complete frames: while any upstream stage buffers a suffix (incomplete
-  // tag, possible DSML token), the released piece is not the whole frame.
-  const frameComplete = () =>
-    !reasoningTagTextPartitioner.hasPending() &&
-    !deepSeekToolCallRecoverer?.hasPending() &&
-    !deepSeekTextFilter?.hasPending();
-  const admit = (text: string, source?: OpenAICompletionsTextSource) =>
-    replayGuard.admitTextDelta(
-      text,
-      currentBlock?.type !== "text" || currentTextSource !== source,
-      frameComplete(),
-    );
+  // is released, before the post-tool-call queue can hold it back. Frame
+  // identity is decided once per complete provider frame, on its whole
+  // visible contribution; admitted pieces then record without re-comparing.
+  // Both visible-text feeders route through this seam; the closures read the
+  // declared block union rather than flow narrowing.
+  const opensTextBlock = (source?: OpenAICompletionsTextSource) =>
+    currentBlock?.type !== "text" || currentTextSource !== source;
+  const classifyFrame = (visible: string, frameComplete: boolean) =>
+    replayGuard.classifyFrame(visible, opensTextBlock(), frameComplete);
+  const admitText = (text: string, source?: OpenAICompletionsTextSource, wholeFrame = false) =>
+    replayGuard.admitTextDelta(text, opensTextBlock(source), wholeFrame);
   const queuePostToolCallDelta = (next: CompletionsReasoningDelta) => {
     const nextBytes = Buffer.byteLength(next.text, "utf8");
     if (pendingPostToolCallBytes + nextBytes > MAX_POST_TOOL_CALL_BUFFER_BYTES) {
@@ -280,7 +276,7 @@ export async function processCompletionsStream(
     appendTextDeltaInternal(text, source);
   };
   const appendVisibleTextDelta = (text: string) => {
-    if (!text || !admit(text)) {
+    if (!text || !admitText(text)) {
       return;
     }
     if (currentBlock?.type === "toolCall" && !directMode) {
@@ -289,25 +285,25 @@ export async function processCompletionsStream(
       appendTextDelta(text);
     }
   };
-  const appendReasoningDeltas = (reasoningDeltas: readonly CompletionsReasoningDelta[]) => {
-    for (const reasoningDelta of reasoningDeltas) {
-      if (reasoningDelta.kind === "thinking" && !emitReasoning) {
+  const appendReasoningDeltas = (reasonings: readonly CompletionsReasoningDelta[]) => {
+    for (const reasoning of reasonings) {
+      if (reasoning.kind === "thinking" && !emitReasoning) {
         continue;
       }
-      if (reasoningDelta.kind === "text" && !admit(reasoningDelta.text, reasoningDelta.source)) {
+      if (reasoning.kind === "text" && !admitText(reasoning.text, reasoning.source, true)) {
         continue;
       }
       if (currentBlock?.type === "toolCall" && !directMode) {
-        queuePostToolCallDelta({ ...reasoningDelta });
+        queuePostToolCallDelta({ ...reasoning });
         continue;
       }
-      if (reasoningDelta.kind === "text") {
-        appendTextDelta(reasoningDelta.text, reasoningDelta.source);
+      if (reasoning.kind === "text") {
+        appendTextDelta(reasoning.text, reasoning.source);
       } else if (emitReasoning) {
         appendThinkingDelta(
-          directMode && model.provider === "opencode-go" && reasoningDelta.signature === "reasoning"
-            ? { ...reasoningDelta, signature: "reasoning_content" }
-            : reasoningDelta,
+          directMode && model.provider === "opencode-go" && reasoning.signature === "reasoning"
+            ? { ...reasoning, signature: "reasoning_content" }
+            : reasoning,
         );
       }
     }
@@ -544,13 +540,21 @@ export async function processCompletionsStream(
       }
       for (const [contentDeltaIndex, contentDelta] of contentDeltas.entries()) {
         if (contentDelta.kind === "text") {
-          // Some providers resend the whole accumulated text as one bare delta;
-          // text_delta is additive, so appending it would double live output.
+          // Some providers resend accumulated text as one bare delta; appending it doubles output.
           const routedDeltas = hasReasoningThinking
             ? reasoningTagTextPartitioner.push(contentDelta.text)
             : reasoningTagTextPartitioner.pushVisible(contentDelta.text);
-          for (const routedDelta of routedDeltas) {
-            appendPartitionedVisibleDelta(routedDelta);
+          // Classify the frame's whole visible contribution before releasing
+          // any piece; a restatement drops every visible piece of the frame.
+          const frameVisible = routedDeltas.reduce(
+            (text, routedDelta) => (routedDelta.kind === "text" ? text + routedDelta.text : text),
+            "",
+          );
+          const frameDone = !reasoningTagTextPartitioner.hasPending();
+          if (!frameVisible || classifyFrame(frameVisible, frameDone)) {
+            for (const routedDelta of routedDeltas) {
+              appendPartitionedVisibleDelta(routedDelta);
+            }
           }
         } else {
           const hasLaterVisibleText = contentDeltaIndex < lastVisibleTextIndex;
