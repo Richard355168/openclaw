@@ -529,41 +529,55 @@ export async function processCompletionsStream(
         appendReasoningDeltas(reasoningDeltas);
       }
       // Some providers resend accumulated text as one bare delta; appending it
-      // doubles output. Plan every content part's emit steps first, then
-      // classify the whole frame's filtered visible contribution before any
-      // piece streams: a settled restatement drops its visible pieces, and a
-      // dropped frame keeps its recovered tool calls and reasoning parts.
-      const plan: DsmlChainStep[] = [];
+      // doubles output. Visible text streams through the parser and DSML chain
+      // into a pending segment plan, and the guard classifies each segment's
+      // whole filtered visible contribution before it streams — at reasoning
+      // transitions and at the end of the content parts, so block structure,
+      // event ordering, and the post-tool-call queue match the unguarded
+      // sequence. A settled restatement drops its visible pieces while its
+      // recovered tool calls still flow; an unsettled segment always flows.
+      let plan: DsmlChainStep[] = [];
+      const settleSegment = () => {
+        const admitted = classifyFrame(plan.reduce((text, step) => text + (step.text ?? ""), ""));
+        for (const step of plan) {
+          if (admitted || step.text === undefined) {
+            step.emit();
+          }
+        }
+        plan = [];
+      };
       for (const [contentDeltaIndex, contentDelta] of contentDeltas.entries()) {
         if (contentDelta.kind === "text") {
           const routedDeltas = hasReasoningThinking
             ? reasoningTagTextPartitioner.push(contentDelta.text)
             : reasoningTagTextPartitioner.pushVisible(contentDelta.text);
-          for (const routedDelta of routedDeltas) {
-            if (routedDelta.kind === "text") {
-              planRecoveredText(
-                dsmlRecoverer?.push(routedDelta.text) ?? [textPart(routedDelta.text)],
-                plan,
-              );
+          for (const routed of routedDeltas) {
+            if (routed.kind === "text") {
+              planRecoveredText(dsmlRecoverer?.push(routed.text) ?? [textPart(routed.text)], plan);
             }
           }
         } else {
-          plan.push({
-            emit: () => {
-              beginReasoning(contentDeltaIndex < lastVisibleTextIndex);
-              appendRoutedContentDelta(contentDelta);
-            },
-          });
+          // A reasoning part transitions lanes exactly as unguarded flow does:
+          // pending parser input marks strict, buffered text releases into the
+          // pending segment for classification unless following text must
+          // finish syntax the parser already owns, and the seal then runs.
+          const hasFollowingVisibleText = contentDeltaIndex < lastVisibleTextIndex;
+          if (reasoningTagTextPartitioner.hasPending()) {
+            reasoningTagTextPartitioner.markStrict();
+          }
+          if (!hasFollowingVisibleText || !reasoningTagTextPartitioner.hasPendingSyntax()) {
+            for (const delta of reasoningTagTextPartitioner.flush()) {
+              if (delta.kind === "text") {
+                planRecoveredText(dsmlRecoverer?.push(delta.text) ?? [textPart(delta.text)], plan);
+              }
+            }
+            settleSegment();
+          }
+          beginReasoning(hasFollowingVisibleText);
+          appendRoutedContentDelta(contentDelta);
         }
       }
-      const frameAdmitted = classifyFrame(
-        plan.reduce((text, step) => text + (step.text ?? ""), ""),
-      );
-      for (const step of plan) {
-        if (frameAdmitted || step.text === undefined) {
-          step.emit();
-        }
-      }
+      settleSegment();
       if (!hasReasoningThinking) {
         appendReasoningDeltas(reasoningDeltas);
       }
