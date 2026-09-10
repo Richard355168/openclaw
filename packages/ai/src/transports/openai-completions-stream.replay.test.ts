@@ -273,4 +273,42 @@ describe.each([
     });
     expect(text).toBe(TEXT_A + TEXT_B);
   });
+
+  it("drops a visible-text replay after inline reasoning tags when enabled", async () => {
+    // The ledger tracks filtered visible text, so a replay of the visible
+    // block matches even though the raw frames carried reasoning-tag syntax.
+    const text = await runStream(createStream, {
+      chunks: [
+        makeCompletionsChunk({ content: `${TEXT_A}<think>x</think>${TEXT_B}` }),
+        makeCompletionsChunk({ content: TEXT_A + TEXT_B }),
+        makeCompletionsChunk({}, "stop"),
+      ],
+      compat: { dropCumulativeTextDeltaReplays: true },
+      expectedText: TEXT_A + TEXT_B,
+    });
+    expect(text).toBe(TEXT_A + TEXT_B);
+  });
+
+  it("drops a cumulative replay after a queued post-tool-call reasoning detail when enabled", async () => {
+    // Managed transport: post-tool-call reasoning details are queued before
+    // their append, and the admission must cover them anyway.
+    const text = await runStream(createStream, {
+      chunks: [
+        makeCompletionsChunk({ role: "assistant", content: TEXT_A }),
+        toolCallChunk(),
+        makeCompletionsChunk({
+          reasoning_details: [{ type: "response.output_text", text: TEXT_B }],
+        }),
+        makeCompletionsChunk({ content: TEXT_C }),
+        makeCompletionsChunk({ content: TEXT_A + TEXT_B + TEXT_C }),
+        makeCompletionsChunk({}, "stop"),
+      ],
+      compat: {
+        dropCumulativeTextDeltaReplays: true,
+        visibleReasoningDetailTypes: ["response.output_text"],
+      },
+      expectedText: TEXT_A + TEXT_B + TEXT_C,
+    });
+    expect(text).toBe(TEXT_A + TEXT_B + TEXT_C);
+  });
 });

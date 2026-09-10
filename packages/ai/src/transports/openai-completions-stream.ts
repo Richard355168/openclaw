@@ -146,11 +146,11 @@ export async function processCompletionsStream(
     chunkPushedEvent = true;
     stream.push(event);
   };
-  // The replay ledger advances at frame acceptance, before downstream
-  // buffering (post-tool-call queue, reasoning-tag partitioner) can desync it.
-  // Both visible-text feeders route through this seam; the closure reads the
+  // The replay ledger tracks filtered visible text and advances as each piece
+  // is released, before the post-tool-call queue can hold it back. Both
+  // visible-text feeders route through this seam; the closure reads the
   // declared block union rather than flow narrowing.
-  const admitVisible = (text: string, source?: OpenAICompletionsTextSource) =>
+  const admit = (text: string, source?: OpenAICompletionsTextSource) =>
     replayGuard.admitTextDelta(text, currentBlock?.type !== "text" || currentTextSource !== source);
   const queuePostToolCallDelta = (next: CompletionsReasoningDelta) => {
     const nextBytes = Buffer.byteLength(next.text, "utf8");
@@ -270,7 +270,7 @@ export async function processCompletionsStream(
     appendTextDeltaInternal(text, source);
   };
   const appendVisibleTextDelta = (text: string) => {
-    if (!text) {
+    if (!text || !admit(text)) {
       return;
     }
     if (currentBlock?.type === "toolCall" && !directMode) {
@@ -284,14 +284,15 @@ export async function processCompletionsStream(
       if (reasoningDelta.kind === "thinking" && !emitReasoning) {
         continue;
       }
+      if (reasoningDelta.kind === "text" && !admit(reasoningDelta.text, reasoningDelta.source)) {
+        continue;
+      }
       if (currentBlock?.type === "toolCall" && !directMode) {
         queuePostToolCallDelta({ ...reasoningDelta });
         continue;
       }
       if (reasoningDelta.kind === "text") {
-        if (admitVisible(reasoningDelta.text, reasoningDelta.source)) {
-          appendTextDelta(reasoningDelta.text, reasoningDelta.source);
-        }
+        appendTextDelta(reasoningDelta.text, reasoningDelta.source);
       } else if (emitReasoning) {
         appendThinkingDelta(
           directMode && model.provider === "opencode-go" && reasoningDelta.signature === "reasoning"
@@ -547,13 +548,11 @@ export async function processCompletionsStream(
           // text_delta is additive, so appending it would double live output.
           // The ledger advances at frame acceptance, before downstream buffering
           // (post-tool-call queue, reasoning-tag partitioner) can desync it.
-          if (admitVisible(contentDelta.text, contentDelta.source)) {
-            const routedDeltas = hasReasoningThinking
-              ? reasoningTagTextPartitioner.push(contentDelta.text)
-              : reasoningTagTextPartitioner.pushVisible(contentDelta.text);
-            for (const routedDelta of routedDeltas) {
-              appendPartitionedVisibleDelta(routedDelta);
-            }
+          const routedDeltas = hasReasoningThinking
+            ? reasoningTagTextPartitioner.push(contentDelta.text)
+            : reasoningTagTextPartitioner.pushVisible(contentDelta.text);
+          for (const routedDelta of routedDeltas) {
+            appendPartitionedVisibleDelta(routedDelta);
           }
         } else {
           const hasLaterVisibleText = contentDeltaIndex < lastVisibleTextIndex;
