@@ -6,6 +6,7 @@ import type { OpenAICompletionsOptions } from "../provider-options.js";
 import {
   createOpenAICompletionsToolCallDeltaNormalizer,
   createOpenAIEncryptedToolCallReasoningTracker,
+  extractToolCallThoughtSignature,
   finalizeOpenAICompletionsToolCalls,
 } from "../providers/openai-completions-tool-calls.js";
 import { mapOpenAIStopReason } from "../providers/openai-stop-reason.js";
@@ -28,6 +29,7 @@ import { withFirstStreamEventTimeout } from "../utils/stream-first-event-timeout
 import { createDeepSeekTextFilter } from "./deepseek-text-filter.js";
 import {
   createDsmlRecoverer,
+  type DeepSeekDsmlRecoveredPart,
   type RecoveredDeepSeekDsmlToolCall,
 } from "./openai-completions-dsml.js";
 import { getCompat } from "./openai-transport-params.js";
@@ -46,6 +48,13 @@ import {
   type OpenAIModeModel,
 } from "./openai-transport-shared.js";
 
+// A deferred emit step for the DSML visible-text chain: text steps carry
+// their filtered piece and may be suppressed whole-frame by the replay guard;
+// every other step always runs.
+type DsmlChainStep = { text?: string; emit(): void };
+
+const textPart = (text: string): DeepSeekDsmlRecoveredPart => ({ kind: "text", text });
+
 type CompletionsStreamOptions = {
   signal?: AbortSignal;
   emitReasoning?: boolean;
@@ -63,27 +72,6 @@ type CompletionsStreamOptions = {
   | { mode?: "managed"; beforeContentBlock?: never }
 );
 
-function extractToolCallThoughtSignature(toolCall: unknown): string | undefined {
-  const tc = toolCall as Record<string, unknown> | undefined;
-  if (!tc) {
-    return undefined;
-  }
-  const extra = (tc.extra_content as Record<string, unknown> | undefined)?.google as
-    | Record<string, unknown>
-    | undefined;
-  const fromExtra = extra?.thought_signature;
-  if (typeof fromExtra === "string" && fromExtra.length > 0) {
-    return fromExtra;
-  }
-  const fromFunction = (tc.function as { thought_signature?: unknown } | undefined)
-    ?.thought_signature;
-  if (typeof fromFunction === "string" && fromFunction.length > 0) {
-    return fromFunction;
-  }
-  const fromToolCall = tc.thought_signature;
-  return typeof fromToolCall === "string" && fromToolCall.length > 0 ? fromToolCall : undefined;
-}
-
 export async function processCompletionsStream(
   responseStream: AsyncIterable<ChatCompletionChunk>,
   output: MutableAssistantOutput,
@@ -99,7 +87,7 @@ export async function processCompletionsStream(
   const visibleReasoningDetailTypes = new Set(compat.visibleReasoningDetailTypes);
   const shouldFilterDeepSeekDsmlText = !directMode && compat.thinkingFormat === "deepseek";
   const deepSeekTextFilter = shouldFilterDeepSeekDsmlText ? createDeepSeekTextFilter() : null;
-  const deepSeekToolCallRecoverer = shouldFilterDeepSeekDsmlText ? createDsmlRecoverer() : null;
+  const dsmlRecoverer = shouldFilterDeepSeekDsmlText ? createDsmlRecoverer() : null;
   const reasoningTagTextPartitioner = createReasoningTagTextPartitioner();
   if (options?.strictReasoningTags) {
     reasoningTagTextPartitioner.markStrict();
@@ -154,8 +142,12 @@ export async function processCompletionsStream(
   // declared block union rather than flow narrowing.
   const opensTextBlock = (source?: OpenAICompletionsTextSource) =>
     currentBlock?.type !== "text" || currentTextSource !== source;
-  const classifyFrame = (visible: string, frameComplete: boolean) =>
-    replayGuard.classifyFrame(visible, opensTextBlock(), frameComplete);
+  const framesSettled = () =>
+    !reasoningTagTextPartitioner.hasPending() &&
+    !dsmlRecoverer?.hasPending() &&
+    !deepSeekTextFilter?.hasPending();
+  const classifyFrame = (visible: string) =>
+    replayGuard.classifyFrame(visible, opensTextBlock(), framesSettled());
   const admitText = (text: string, source?: OpenAICompletionsTextSource, wholeFrame = false) =>
     replayGuard.admitTextDelta(text, opensTextBlock(source), wholeFrame);
   const queuePostToolCallDelta = (next: CompletionsReasoningDelta) => {
@@ -343,39 +335,32 @@ export async function processCompletionsStream(
       partial: output,
     });
   };
-  const appendFilteredVisibleTextDelta = (text: string) => {
-    const recoveredParts = deepSeekToolCallRecoverer?.push(text) ?? [
-      { kind: "text" as const, text },
-    ];
-    for (const recoveredPart of recoveredParts) {
+  // Defers the DSML chain's emit steps so a caller can classify the whole
+  // filtered output before any of it streams; text steps carry their piece.
+  const planRecoveredText = (recovered: DeepSeekDsmlRecoveredPart[], plan: DsmlChainStep[]) => {
+    for (const recoveredPart of recovered) {
       if (recoveredPart.kind === "toolCall") {
-        appendRecoveredToolCall(recoveredPart);
+        plan.push({ emit: () => appendRecoveredToolCall(recoveredPart) });
         continue;
       }
-      const parts = deepSeekTextFilter?.push(recoveredPart.text) ?? [recoveredPart.text];
-      for (const part of parts) {
-        appendVisibleTextDelta(part);
+      for (const part of deepSeekTextFilter?.push(recoveredPart.text) ?? [recoveredPart.text]) {
+        plan.push({ text: part, emit: () => appendVisibleTextDelta(part) });
       }
     }
   };
   const flushDeepSeekStagesAtEnd = () => {
-    const recoveredParts = deepSeekToolCallRecoverer?.flush();
-    for (const recoveredPart of recoveredParts ?? []) {
-      if (recoveredPart.kind === "toolCall") {
-        appendRecoveredToolCall(recoveredPart);
-        continue;
-      }
-      for (const part of deepSeekTextFilter?.push(recoveredPart.text) ?? [recoveredPart.text]) {
-        appendVisibleTextDelta(part);
-      }
-    }
+    const steps: DsmlChainStep[] = [];
+    planRecoveredText(dsmlRecoverer?.flush() ?? [], steps);
     for (const part of deepSeekTextFilter?.flush() ?? []) {
-      appendVisibleTextDelta(part);
+      steps.push({ text: part, emit: () => appendVisibleTextDelta(part) });
+    }
+    for (const step of steps) {
+      step.emit();
     }
   };
   const appendRoutedContentDelta = (delta: CompletionsReasoningDelta) => {
     if (delta.kind === "text") {
-      appendFilteredVisibleTextDelta(delta.text);
+      appendPartitionedVisibleDelta(delta);
       return;
     }
     if (!emitReasoning) {
@@ -388,8 +373,13 @@ export async function processCompletionsStream(
     }
   };
   const appendPartitionedVisibleDelta = (delta: { kind: "text" | "thinking"; text: string }) => {
-    if (delta.kind === "text") {
-      appendFilteredVisibleTextDelta(delta.text);
+    if (delta.kind !== "text") {
+      return;
+    }
+    const steps: DsmlChainStep[] = [];
+    planRecoveredText(dsmlRecoverer?.push(delta.text) ?? [textPart(delta.text)], steps);
+    for (const step of steps) {
+      step.emit();
     }
   };
   const emitReasoningUsageActivity = (hasReasoningUsageActivity: boolean) => {
@@ -538,28 +528,40 @@ export async function processCompletionsStream(
         beginReasoning(hasSameChunkVisibleText, true);
         appendReasoningDeltas(reasoningDeltas);
       }
+      // Some providers resend accumulated text as one bare delta; appending it
+      // doubles output. Plan every content part's emit steps first, then
+      // classify the whole frame's filtered visible contribution before any
+      // piece streams: a settled restatement drops its visible pieces, and a
+      // dropped frame keeps its recovered tool calls and reasoning parts.
+      const plan: DsmlChainStep[] = [];
       for (const [contentDeltaIndex, contentDelta] of contentDeltas.entries()) {
         if (contentDelta.kind === "text") {
-          // Some providers resend accumulated text as one bare delta; appending it doubles output.
           const routedDeltas = hasReasoningThinking
             ? reasoningTagTextPartitioner.push(contentDelta.text)
             : reasoningTagTextPartitioner.pushVisible(contentDelta.text);
-          // Classify the frame's whole visible contribution before releasing
-          // any piece; a restatement drops every visible piece of the frame.
-          const frameVisible = routedDeltas.reduce(
-            (text, routedDelta) => (routedDelta.kind === "text" ? text + routedDelta.text : text),
-            "",
-          );
-          const frameDone = !reasoningTagTextPartitioner.hasPending();
-          if (!frameVisible || classifyFrame(frameVisible, frameDone)) {
-            for (const routedDelta of routedDeltas) {
-              appendPartitionedVisibleDelta(routedDelta);
+          for (const routedDelta of routedDeltas) {
+            if (routedDelta.kind === "text") {
+              planRecoveredText(
+                dsmlRecoverer?.push(routedDelta.text) ?? [textPart(routedDelta.text)],
+                plan,
+              );
             }
           }
         } else {
-          const hasLaterVisibleText = contentDeltaIndex < lastVisibleTextIndex;
-          beginReasoning(hasLaterVisibleText);
-          appendRoutedContentDelta(contentDelta);
+          plan.push({
+            emit: () => {
+              beginReasoning(contentDeltaIndex < lastVisibleTextIndex);
+              appendRoutedContentDelta(contentDelta);
+            },
+          });
+        }
+      }
+      const frameAdmitted = classifyFrame(
+        plan.reduce((text, step) => text + (step.text ?? ""), ""),
+      );
+      for (const step of plan) {
+        if (frameAdmitted || step.text === undefined) {
+          step.emit();
         }
       }
       if (!hasReasoningThinking) {

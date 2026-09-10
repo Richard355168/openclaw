@@ -5,6 +5,27 @@ import { measureUtf8AppendBytes } from "../transports/openai-transport-shared.js
 import { finalizeTerminalToolCallArguments } from "../transports/transport-stream-shared.js";
 import type { ToolCall } from "../types.js";
 
+export function extractToolCallThoughtSignature(toolCall: unknown): string | undefined {
+  const tc = toolCall as Record<string, unknown> | undefined;
+  if (!tc) {
+    return undefined;
+  }
+  const extra = (tc.extra_content as Record<string, unknown> | undefined)?.google as
+    | Record<string, unknown>
+    | undefined;
+  const fromExtra = extra?.thought_signature;
+  if (typeof fromExtra === "string" && fromExtra.length > 0) {
+    return fromExtra;
+  }
+  const fromFunction = (tc.function as { thought_signature?: unknown } | undefined)
+    ?.thought_signature;
+  if (typeof fromFunction === "string" && fromFunction.length > 0) {
+    return fromFunction;
+  }
+  const fromToolCall = tc.thought_signature;
+  return typeof fromToolCall === "string" && fromToolCall.length > 0 ? fromToolCall : undefined;
+}
+
 type ChatCompletionToolCallDelta = ChatCompletionChunk.Choice.Delta.ToolCall;
 const MAX_BUFFERED_TOOL_CALL_ARGUMENT_BYTES = 256_000;
 const MAX_BUFFERED_LEGACY_FOLLOWING_DELTA_BYTES = 256_000;

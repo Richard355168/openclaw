@@ -359,6 +359,27 @@ describe.each([
     });
     expect(text).toBe(TEXT_A + TEXT_B);
   });
+
+  it("classifies structured content parts of one frame together while enabled", async () => {
+    // Array content flattens into separate deltas; the first part alone can
+    // restate the block while the frame's total adds genuine text, so the
+    // classification must cover the whole frame's parts.
+    const text = await runStream(createStream, {
+      chunks: [
+        makeCompletionsChunk({ role: "assistant", content: TEXT_A }),
+        makeCompletionsChunk({
+          content: [
+            { type: "text", text: TEXT_A },
+            { type: "text", text: "tail" },
+          ],
+        }),
+        makeCompletionsChunk({}, "stop"),
+      ],
+      compat: { dropCumulativeTextDeltaReplays: true },
+      expectedText: `${TEXT_A}${TEXT_A}tail`,
+    });
+    expect(text).toBe(`${TEXT_A}${TEXT_A}tail`);
+  });
 });
 
 describe("managed cumulative text delta replays with DSML recovery", () => {
@@ -402,5 +423,23 @@ describe("managed cumulative text delta replays with DSML recovery", () => {
       expectedText: `${TEXT_A}${TEXT_A}tail`,
     });
     expect(text).toBe(`${TEXT_A}${TEXT_A}tail`);
+  });
+
+  it("suppresses a complete replay hidden behind DSML markup while enabled", async () => {
+    // The wrapper is filtered away, so the frame's filtered visible total
+    // restates the block exactly and the whole frame is suppressed.
+    const text = await runStream(createOpenAICompletionsTransportStreamFn(), {
+      chunks: [
+        makeCompletionsChunk({ role: "assistant", content: TEXT_A }),
+        makeCompletionsChunk({ content: `${TEXT_A}<|DSML|tool_calls>x</|DSML|tool_calls>` }),
+        makeCompletionsChunk({}, "stop"),
+      ],
+      compat: {
+        dropCumulativeTextDeltaReplays: true,
+        thinkingFormat: "deepseek",
+      },
+      expectedText: TEXT_A,
+    });
+    expect(text).toBe(TEXT_A);
   });
 });
