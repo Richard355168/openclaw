@@ -23,10 +23,31 @@ type CompletionsStreamCreator =
   | StreamFn
   | StreamFunction<"openai-completions", OpenAICompletionsOptions>;
 
-async function runStream(
+type ReplayTextBlockPhase = "commentary" | "final_answer";
+
+type ReplayTextBlock = {
+  text: string;
+  phase?: ReplayTextBlockPhase;
+};
+
+function replayTextBlockPhase(signature: string | undefined): ReplayTextBlockPhase | undefined {
+  if (!signature) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(signature) as { phase?: string };
+    return parsed.phase === "commentary" || parsed.phase === "final_answer"
+      ? parsed.phase
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function runStreamBlocks(
   createStream: CompletionsStreamCreator,
   caseInput: ReplayCase,
-): Promise<string> {
+): Promise<ReplayTextBlock[]> {
   const server = createServer((req, res) => {
     req.setEncoding("utf8");
     req.on("data", () => {});
@@ -64,13 +85,23 @@ async function runStream(
     const result = await stream.result();
     return result.content
       .filter((block) => block.type === "text")
-      .map((block) => (block as { type: "text"; text: string }).text)
-      .join("");
+      .map((block) => {
+        const textBlock = block as { type: "text"; text: string; textSignature?: string };
+        return { text: textBlock.text, phase: replayTextBlockPhase(textBlock.textSignature) };
+      });
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
   }
+}
+
+async function runStream(
+  createStream: CompletionsStreamCreator,
+  caseInput: ReplayCase,
+): Promise<string> {
+  const blocks = await runStreamBlocks(createStream, caseInput);
+  return blocks.map((block) => block.text).join("");
 }
 
 const replayChunks = (): ReplayChunk[] => [
@@ -381,6 +412,46 @@ describe.each([
       expectedText: `${TEXT_A}Additional detail.`,
     });
     expect(text).toBe(`${TEXT_A}Additional detail.`);
+  });
+
+  it("keeps the delivered final answer identical whether the restated run is suppressed", async () => {
+    // The structured reasoning part interrupts the open text block, so the
+    // interrupted run is delivered as commentary and the genuine follow-up as
+    // the final answer. Suppression may only shrink the commentary block by
+    // its duplicate copy; the final answer must stay byte-identical.
+    const chunks = [
+      makeCompletionsChunk({ role: "assistant", content: TEXT_A }),
+      makeCompletionsChunk({
+        content: [
+          { type: "text", text: TEXT_A },
+          { type: "thinking", thinking: "Recheck." },
+          { type: "text", text: "Additional detail." },
+        ],
+      }),
+      makeCompletionsChunk({}, "stop"),
+    ];
+    const suppressed = await runStreamBlocks(createStream, {
+      chunks,
+      compat: { dropCumulativeTextDeltaReplays: true },
+      expectedText: `${TEXT_A}Additional detail.`,
+    });
+    const appended = await runStreamBlocks(createStream, {
+      chunks,
+      expectedText: `${TEXT_A}${TEXT_A}Additional detail.`,
+    });
+
+    expect(suppressed.filter((block) => block.phase === "commentary").map((b) => b.text)).toEqual([
+      TEXT_A,
+    ]);
+    expect(appended.filter((block) => block.phase === "commentary").map((b) => b.text)).toEqual([
+      TEXT_A + TEXT_A,
+    ]);
+    expect(suppressed.filter((block) => block.phase === "final_answer").map((b) => b.text)).toEqual(
+      appended.filter((block) => block.phase === "final_answer").map((b) => b.text),
+    );
+    expect(suppressed.filter((block) => block.phase === "final_answer").map((b) => b.text)).toEqual(
+      ["Additional detail."],
+    );
   });
 
   it("classifies structured content parts of one frame together while enabled", async () => {
