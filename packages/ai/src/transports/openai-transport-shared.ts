@@ -227,11 +227,10 @@ const CUMULATIVE_TEXT_DELTA_REPLAY_MIN_CHARS = 8;
  * Guarding at the producer keeps every downstream consumer on a single additive
  * accumulation path.
  *
- * The ledger advances when a frame is accepted, before any downstream buffering
- * (the post-tool-call queue, the reasoning-tag partitioner, provider text
- * filters), so the comparison never runs against a stale prefix. The comparison
- * unit is the current text block: a frame restating only earlier blocks is the
- * first delta of a new block and must keep flowing.
+ * The ledger tracks filtered visible text at the admission seam, so it advances
+ * with every released piece and never runs against a stale prefix. The
+ * comparison unit is the current text block: a frame restating only earlier
+ * blocks is the first delta of a new block and must keep flowing.
  */
 export function createCumulativeReplayGuard(enabled: boolean) {
   let acceptedText = "";
@@ -239,15 +238,19 @@ export function createCumulativeReplayGuard(enabled: boolean) {
   let textBlockStartPending = false;
   return {
     /**
-     * Records an accepted visible-text frame and reports whether it was
-     * admitted. A frame restating all accepted text including the current
+     * Records an accepted visible-text piece and reports whether it was
+     * admitted. A piece restating all accepted text including the current
      * block's content is a cumulative replay and is not admitted. Every
      * visible-text feeder (content deltas and visible reasoning details) must
      * route through this seam, or the ledger under-describes the block.
-     * `opensTextBlock` must be true when the frame will start a new text block
+     * `opensTextBlock` must be true when the piece will start a new text block
      * (current block is not text, or the visible-text source changed).
+     * `frameComplete` must be false while any upstream stage still buffers
+     * input: a released prefix of an incomplete frame can restate the block
+     * even though the frame itself is not a replay, so equality must not
+     * classify it as one.
      */
-    admitTextDelta(text: string, opensTextBlock: boolean): boolean {
+    admitTextDelta(text: string, opensTextBlock: boolean, frameComplete: boolean): boolean {
       if (opensTextBlock) {
         if (!textBlockStartPending) {
           textBlockStartLength = acceptedText.length;
@@ -258,6 +261,7 @@ export function createCumulativeReplayGuard(enabled: boolean) {
       }
       const isCumulativeReplay =
         enabled &&
+        frameComplete &&
         text.length >= CUMULATIVE_TEXT_DELTA_REPLAY_MIN_CHARS &&
         text.length === acceptedText.length &&
         text === acceptedText &&

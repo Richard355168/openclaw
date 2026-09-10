@@ -148,10 +148,20 @@ export async function processCompletionsStream(
   };
   // The replay ledger tracks filtered visible text and advances as each piece
   // is released, before the post-tool-call queue can hold it back. Both
-  // visible-text feeders route through this seam; the closure reads the
-  // declared block union rather than flow narrowing.
+  // visible-text feeders route through this seam; the closures read the
+  // declared block union rather than flow narrowing. Equality only fires for
+  // complete frames: while any upstream stage buffers a suffix (incomplete
+  // tag, possible DSML token), the released piece is not the whole frame.
+  const frameComplete = () =>
+    !reasoningTagTextPartitioner.hasPending() &&
+    !deepSeekToolCallRecoverer?.hasPending() &&
+    !deepSeekTextFilter?.hasPending();
   const admit = (text: string, source?: OpenAICompletionsTextSource) =>
-    replayGuard.admitTextDelta(text, currentBlock?.type !== "text" || currentTextSource !== source);
+    replayGuard.admitTextDelta(
+      text,
+      currentBlock?.type !== "text" || currentTextSource !== source,
+      frameComplete(),
+    );
   const queuePostToolCallDelta = (next: CompletionsReasoningDelta) => {
     const nextBytes = Buffer.byteLength(next.text, "utf8");
     if (pendingPostToolCallBytes + nextBytes > MAX_POST_TOOL_CALL_BUFFER_BYTES) {
@@ -352,28 +362,18 @@ export async function processCompletionsStream(
       }
     }
   };
-  const flushDeepSeekToolCallRecovererAtEnd = () => {
+  const flushDeepSeekStagesAtEnd = () => {
     const recoveredParts = deepSeekToolCallRecoverer?.flush();
-    if (!recoveredParts) {
-      return;
-    }
-    for (const recoveredPart of recoveredParts) {
+    for (const recoveredPart of recoveredParts ?? []) {
       if (recoveredPart.kind === "toolCall") {
         appendRecoveredToolCall(recoveredPart);
         continue;
       }
-      const parts = deepSeekTextFilter?.push(recoveredPart.text) ?? [recoveredPart.text];
-      for (const part of parts) {
+      for (const part of deepSeekTextFilter?.push(recoveredPart.text) ?? [recoveredPart.text]) {
         appendVisibleTextDelta(part);
       }
     }
-  };
-  const flushDeepSeekTextFilterAtEnd = () => {
-    const parts = deepSeekTextFilter?.flush();
-    if (!parts) {
-      return;
-    }
-    for (const part of parts) {
+    for (const part of deepSeekTextFilter?.flush() ?? []) {
       appendVisibleTextDelta(part);
     }
   };
@@ -546,8 +546,6 @@ export async function processCompletionsStream(
         if (contentDelta.kind === "text") {
           // Some providers resend the whole accumulated text as one bare delta;
           // text_delta is additive, so appending it would double live output.
-          // The ledger advances at frame acceptance, before downstream buffering
-          // (post-tool-call queue, reasoning-tag partitioner) can desync it.
           const routedDeltas = hasReasoningThinking
             ? reasoningTagTextPartitioner.push(contentDelta.text)
             : reasoningTagTextPartitioner.pushVisible(contentDelta.text);
@@ -670,8 +668,7 @@ export async function processCompletionsStream(
     throw new Error("Stream ended without finish_reason");
   }
   flushReasoningTagTextPartitioner();
-  flushDeepSeekToolCallRecovererAtEnd();
-  flushDeepSeekTextFilterAtEnd();
+  flushDeepSeekStagesAtEnd();
   currentBlock = null;
   flushPendingPostToolCallDeltas();
   // Only an explicit stop or observed SSE terminal may authorize silent tool calls.
