@@ -13,7 +13,7 @@ Each database records its published schema in two places:
 - `PRAGMA user_version` is the SQLite schema version.
 - The primary `schema_meta` row records `role`, `agent_id`, `schema_version`, and `app_version`. `app_version` is the OpenClaw build that last wrote the schema metadata.
 
-OpenClaw applies forward-only migrations when it opens an older supported database. It refuses a database whose `user_version` is newer than the running build and reports a `newer schema version` error. The Gateway checks all registered databases before startup. `openclaw update` also refuses a package or source target whose declared schema support is older than an on-disk database. Target packages published before schema metadata was added cannot be preflighted. Updates driven by the 2026.9.2 release line can temporarily defer publication of a shared-state schema version while the old updater finishes; see [Schema bumps and older updaters](#schema-bumps-and-older-updaters).
+OpenClaw applies forward-only migrations when it opens an older supported database. It refuses a database whose `user_version` is newer than the running build and reports a `newer schema version` error. The Gateway checks all registered databases before startup. [`openclaw update`](/cli/update) also refuses a package or source target whose declared schema support is older than an on-disk database. Target packages published before schema metadata was added cannot be preflighted. Updates driven by the 2026.9.2 release line can temporarily defer publication of a shared-state schema version while the old updater finishes; see [Schema bumps and older updaters](#schema-bumps-and-older-updaters).
 
 When Gateway startup encounters a newer database schema, it exits with status 78 so the generated systemd service does not restart it repeatedly. On macOS, it also parks its managed LaunchAgent to stop `KeepAlive` retries. This applies to failures during CLI bootstrap as well as server startup and does not depend on the database-backed crash counter. Start the Gateway with a build that supports the existing schemas. The older install cannot repair them with `doctor --fix`; run Doctor from the compatible install if further migration is required, then restart through the service or deployment owner.
 
@@ -32,7 +32,7 @@ window is deleted, so rewriting a transcript cannot make an old input runnable a
 
 Worker preparation uses the same-version rule for the bare nullable
 `worker_environments.preparation_purpose TEXT` column in the shared state
-database. Shared-state database startup repair adds it without changing state schema 17.
+database. Shared state database startup repair adds it without changing state schema 17.
 New admissions write `reserve` or `build`; existing preparation rows retain
 `NULL` and read as `reserve`, without backfilling demand or changing expiry.
 Older readers ignore the column and apply their existing reserve policy to all
@@ -112,7 +112,7 @@ but disables the new structured controls; upgrading can read retained receipts.
 
 OpenClaw 2026.9.2 introduced the update ledger but reopens it with old code after
 running the target's Doctor, including a final read after recording its terminal
-outcome. The shared-state database runner lets this updater finish by applying
+outcome. The shared state database runner lets this updater finish by applying
 migration content first and publishing the new schema version later. This rule
 applies to every writable open, including Doctor, the restarted Gateway, and
 other CLI processes.

@@ -1354,7 +1354,9 @@
                   "start/why-openclaw/versioned-state-guarded-upgrades",
                   "start/why-openclaw/provenance",
                   "start/why-openclaw/openclaw-and-hermes-agent",
-                  "concepts/features"
+                  "concepts/features",
+                  "start/hubs",
+                  "start/docs-directory"
                 ]
               },
               {
@@ -2883,6 +2885,7 @@
                           "cli/plugins/marketplace"
                         ]
                       },
+                      "cli/file-transfer",
                       "cli/path",
                       "cli/policy",
                       {
@@ -3164,6 +3167,7 @@
                   },
                   "reference/rich-output-protocol",
                   "reference/secretref-credential-surface",
+                  "reference/secret-placeholder-conventions",
                   "date-time",
                   "concepts/timezone"
                 ]
@@ -3323,7 +3327,6 @@
                       "help/testing-live/media-providers"
                     ]
                   },
-                  "channels/qa-channel",
                   "concepts/mantis",
                   "concepts/mantis-slack-desktop-runbook"
                 ]
@@ -3384,9 +3387,7 @@
               {
                 "group": "Community and meta",
                 "pages": [
-                  "start/lore",
-                  "start/hubs",
-                  "start/docs-directory"
+                  "start/lore"
                 ]
               }
             ]

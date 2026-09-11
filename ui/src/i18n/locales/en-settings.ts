@@ -107,6 +107,44 @@ const enSettings = {
       policyRestart: "Policy changes take effect after the Gateway restarts.",
       policySaved: "Retention policy saved. Restart the Gateway to apply it.",
       policySaveFailed: "Could not save retention policy. Refresh the config and try again.",
+      buildSnapshot: "Build snapshot",
+      rebuild: "Rebuild",
+      profile: "Profile",
+      repository: "Repository",
+      chooseProfile: "Choose a profile",
+      chooseRepository: "Choose a repository",
+      selectBuildInputs: "Choose an enabled profile and a local repository.",
+      buildHelp:
+        "Prepare the repository's committed HEAD and run its committed setup recipe without starting a session.",
+      noRepositories:
+        "No local repositories were found. Add a local project from New Session, then reopen this dialog.",
+      buildStarted: "Build started",
+      buildReused: "Reusing the build already in progress",
+      capacity:
+        "The prepared worker pool is full. Raise the prepared pool cap or destroy an unused worker, then try again.",
+      invalidProject:
+        "The repository must be an accessible local Git checkout root with a HEAD commit. Select another repository or fix the checkout, then try again.",
+      invalidProfile:
+        "This profile is unavailable or does not support project preparation. Refresh and select an eligible profile.",
+      cancelBuild: "Cancel build",
+      cancelBuildMessage:
+        "Stop this snapshot build and destroy its worker? OpenClaw waits for provider work and cleanup to finish.",
+      buildCancelled: "Build canceled",
+      buildAge: "Age: {age}",
+      buildAfterRestart: "After the Gateway restarts, build a snapshot from the Snapshots view.",
+      buildStates: {
+        requested: "Requested",
+        provisioning: "Provisioning",
+        bootstrapping: "Bootstrapping",
+        ready: "Ready",
+        attached: "Attached",
+        idle: "Idle",
+        draining: "Draining",
+        destroying: "Destroying",
+        destroyed: "Destroyed",
+        failed: "Failed",
+        orphaned: "Orphaned",
+      },
       refresh: "Refresh",
       recover: "Recover",
       recoverTitle: "Recover paused capture",
@@ -238,6 +276,15 @@ const enSettings = {
   modelProviders: {
     title: "Configured providers",
     configureModels: "Configure Models",
+    login: {
+      action: "Connect provider",
+      title: "Connect a provider",
+      description: "Save credentials for this agent. Choose the active model separately.",
+      done: "Provider credentials saved.",
+      finishing: "Credentials are being saved. Wait for the result.",
+      sessionExpired:
+        "This sign-in session ended. Close this dialog and refresh Models to check the result.",
+    },
     subtitle: "Providers and credentials for the selected agent.",
     updated: "Updated {time}",
     refreshing: "Refreshing…",
@@ -305,7 +352,7 @@ const enSettings = {
       replace: "Replace key",
       remove: "Remove key",
       saved: "Secret saved.",
-      removed: "API key removed.",
+      removed: "Saved API keys removed.",
       authModeBlocked: 'API key changes are unavailable while auth mode is "{mode}".',
     },
     probe: {
@@ -390,9 +437,6 @@ const enSettings = {
       adminRequired: "Browsing only. Model changes require operator.admin access.",
     },
     notes: {
-      saveKey: "Save API key for {provider} from Control UI",
-      removeKey: "Remove API key for {provider} from Control UI",
-      addProvider: "Add model provider {provider} from Control UI",
       defaultModel: "Update defaults from Control UI",
     },
   },
