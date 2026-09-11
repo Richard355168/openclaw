@@ -192,7 +192,6 @@ extensions/codex/src/app-server/plugin-inventory.ts	6
 extensions/codex/src/app-server/plugin-metadata-cache.ts	5
 extensions/codex/src/app-server/plugin-thread-app-admission.ts	1
 extensions/codex/src/app-server/protocol-validators.ts	7
-extensions/codex/src/app-server/rate-limits.ts	1
 extensions/codex/src/app-server/reasoning-effort.ts	1
 extensions/codex/src/app-server/remote-workspace-media.ts	6
 extensions/codex/src/app-server/request.ts	2
@@ -490,7 +489,7 @@ extensions/firecrawl/src/firecrawl-fetch-provider-shared.ts	5
 extensions/fish-audio-speech/speech-provider.ts	1
 extensions/github-copilot/connection-bound-ids.ts	1
 extensions/github-copilot/embeddings.ts	6
-extensions/github-copilot/index.ts	6
+extensions/github-copilot/index.ts	4
 extensions/github-copilot/login.ts	2
 extensions/github-copilot/models.ts	3
 extensions/github-copilot/oauth.ts	1
@@ -1841,7 +1840,6 @@ src/agents/model-auth-model.ts	2
 src/agents/model-fallback-attempt.ts	1
 src/agents/model-fallback-runner.ts	2
 src/agents/model-provider-auth.ts	1
-src/agents/model-provider-auth.worker.ts	1
 src/agents/model-scan.ts	3
 src/agents/model-selection-shared.ts	1
 src/agents/model-tool-support.ts	1
@@ -2079,7 +2077,6 @@ src/auto-reply/reply/config-mutations.ts	1
 src/auto-reply/reply/conversation-turn-capture.ts	2
 src/auto-reply/reply/directive-handling.impl.ts	2
 src/auto-reply/reply/directive-handling.levels.ts	9
-src/auto-reply/reply/directive-handling.model-picker.ts	1
 src/auto-reply/reply/directive-handling.parse.ts	2
 src/auto-reply/reply/directive-handling.shared.ts	2
 src/auto-reply/reply/directives.ts	2
@@ -2677,8 +2674,6 @@ src/gateway/board-host-tools.ts	1
 src/gateway/board-view-ticket.ts	1
 src/gateway/boot.ts	1
 src/gateway/call.ts	6
-src/gateway/channel-health-monitor.ts	6
-src/gateway/channel-thaw-restart.ts	1
 src/gateway/chat-attachments.ts	4
 src/gateway/chat-display-projection.canvas.ts	13
 src/gateway/chat-display-projection.core.ts	5
@@ -3838,7 +3833,7 @@ ui/src/pages/chat/components/chat-model-picker-options.ts	2
 ui/src/pages/chat/components/chat-model-picker.ts	5
 ui/src/pages/chat/components/chat-pane-header.ts	2
 ui/src/pages/chat/components/chat-selection-popup.ts	1
-ui/src/pages/chat/components/chat-session-rail.ts	4
+ui/src/pages/chat/components/chat-session-rail.ts	3
 ui/src/pages/chat/components/chat-session-sharing.ts	1
 ui/src/pages/chat/components/chat-session-workspace.ts	1
 ui/src/pages/chat/components/chat-sidebar-editor-menu.ts	2

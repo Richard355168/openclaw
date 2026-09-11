@@ -3099,6 +3099,8 @@ export const en: TranslationMap & {
     noFeaturedResults: "No featured plugins are available right now.",
     exploreTitle: "Explore plugins",
     loadingDiscovery: "Loading ClawHub plugins…",
+    loadMore: "Load more",
+    loadingMore: "Loading more…",
     discoveryOffline: "Connect to browse plugins from ClawHub.",
     noDiscoveryResults: "No ClawHub plugins match this view.",
     searchClawHub: "Search ClawHub plugins",
@@ -5619,7 +5621,7 @@ export const en: TranslationMap & {
       positionUserMessage: "User message",
       positionAssistantMessage: "Assistant message",
       positionMarkerHint:
-        "Use arrow keys to choose a marker, Enter or Space to jump, and Escape to dismiss the preview.",
+        "Use arrow keys or Home and End to choose a marker, Enter or Space to jump, and Escape to return to the conversation. Tab leaves the rail.",
     },
     pendingInputs: {
       waitingForWorkspaceSync: "Received · waiting for workspace sync",
