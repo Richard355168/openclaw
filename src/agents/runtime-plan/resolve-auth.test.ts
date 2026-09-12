@@ -156,42 +156,38 @@ describe("resolvePreparedRuntimeModelAuth", () => {
     });
   });
 
-  it(
-    "does not borrow an unprepared API-key profile for direct subscription auth",
-    { timeout: 1_000 },
-    async () => {
-      vi.stubEnv("OPENAI_API_KEY", "");
-      const store = authStore({
-        "openai:platform": {
-          type: "api_key",
-          provider: "openai",
-          key: "platform-key",
-        },
-      });
+  it("does not borrow an unprepared API-key profile for direct subscription auth", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "");
+    const store = authStore({
+      "openai:platform": {
+        type: "api_key",
+        provider: "openai",
+        key: "platform-key",
+      },
+    });
 
-      await expect(
-        resolvePreparedRuntimeModelAuth({
-          plan: {
-            providerForAuth: "openai",
-            authProfileProviderForAuth: "openai",
-            selectedAuthMode: "token",
-            modelRoute: {
-              provider: "openai",
-              modelId: "gpt-5.5",
-              api: "openai-chatgpt-responses",
-              baseUrl: "https://chatgpt.com/backend-api/codex",
-              authRequirement: "subscription",
-              requestTransportOverrides: "none",
-            },
+    await expect(
+      resolvePreparedRuntimeModelAuth({
+        plan: {
+          providerForAuth: "openai",
+          authProfileProviderForAuth: "openai",
+          selectedAuthMode: "token",
+          modelRoute: {
+            provider: "openai",
+            modelId: "gpt-5.5",
+            api: "openai-chatgpt-responses",
+            baseUrl: "https://chatgpt.com/backend-api/codex",
+            authRequirement: "subscription",
+            requestTransportOverrides: "none",
           },
-          model: subscriptionModel,
-          cfg: {},
-          store,
-          secretSentinels: true,
-        }),
-      ).rejects.toThrow('No API key found for provider "openai"');
-    },
-  );
+        },
+        model: subscriptionModel,
+        cfg: {},
+        store,
+        secretSentinels: true,
+      }),
+    ).rejects.toThrow('No API key found for provider "openai"');
+  });
 
   it("resolves an ambient Platform key without borrowing the OAuth-only full store", async () => {
     vi.stubEnv("OPENAI_API_KEY", "ambient-platform-key");
