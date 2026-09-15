@@ -320,6 +320,7 @@ const enSettings = {
     login: {
       action: "Connect provider",
       title: "Connect a provider",
+      noOptions: "No account connection methods are available.",
       description: "Save credentials for this agent. Choose the active model separately.",
       done: "Provider credentials saved.",
       finishing: "Credentials are being saved. Wait for the result.",
@@ -471,7 +472,6 @@ const enSettings = {
         "Sets the global default for new sessions. Auto starts in fast mode and returns to standard mode after the model's configured interval; On and Off keep that behavior fixed.",
       fastModeDefaultHelp:
         "Uses the selected model's fast-mode policy. Unlike Auto, Default does not enable fast mode by itself.",
-      saved: "Defaults saved.",
     },
     readOnly: {
       disconnected: "Connect to the gateway to change model settings.",
