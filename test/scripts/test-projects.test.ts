@@ -740,21 +740,23 @@ describe("scripts/test-projects changed-target routing", () => {
     expectChangedTargets(["scripts/pr-lib/worktree.sh"], ["test/vitest/vitest.tooling.config.ts"]);
   });
 
-  it.each(["scripts/pr", "scripts/pr-lib/merge.sh", "scripts/pr-lib/merge-outcome.sh"])(
-    "routes native merge changes through the outcome owner for %s",
-    (scriptPath) => {
-      expectChangedTargets(
-        [scriptPath],
-        [
-          "test/scripts/pr-merge.test.ts",
-          "test/scripts/pr-merge-outcome.test.ts",
-          ...(scriptPath === "scripts/pr"
-            ? ["test/scripts/pr-operation-lock.test.ts", "test/scripts/pr-wrappers.test.ts"]
-            : []),
-        ],
-      );
-    },
-  );
+  it.each([
+    "scripts/pr",
+    "scripts/pr-lib/merge.sh",
+    "scripts/pr-lib/merge-outcome.sh",
+    "scripts/pr-lib/merge-legacy-refusal.mjs",
+  ])("routes native merge changes through the outcome owner for %s", (scriptPath) => {
+    expectChangedTargets(
+      [scriptPath],
+      [
+        "test/scripts/pr-merge.test.ts",
+        "test/scripts/pr-merge-outcome.test.ts",
+        ...(scriptPath === "scripts/pr"
+          ? ["test/scripts/pr-operation-lock.test.ts", "test/scripts/pr-wrappers.test.ts"]
+          : []),
+      ],
+    );
+  });
 
   it("routes unmatched script changes to the tooling suite instead of skipping tests", () => {
     const targets = ["scripts/check-no-raw-http2-imports.mts"];
@@ -2402,6 +2404,17 @@ describe("scripts/test-projects changed-target routing", () => {
       });
     },
   );
+
+  it.each([
+    "src/logging/diagnostic-session-context.test.ts",
+    "src/logging/diagnostic-stuck-session-recovery.runtime.test.ts",
+    "src/state/openclaw-state-db.test.ts",
+  ])("routes cron save-only fixture %s to the existing fork owner", (testFile) => {
+    expectSingleVitestRunPlan(buildVitestRunPlans([testFile]), {
+      config: "test/vitest/vitest.infra.config.ts",
+      includePatterns: [testFile],
+    });
+  });
 
   it.each([
     ["src/plugin-sdk/memory-host-events.ts", "src/plugin-sdk/memory-host-events.test.ts"],
