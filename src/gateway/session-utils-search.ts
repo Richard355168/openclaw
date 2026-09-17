@@ -12,7 +12,7 @@ import {
   type SessionEntry,
 } from "../config/sessions.js";
 import type { GatewayStoredSessionTargets } from "../config/sessions/combined-store-gateway.js";
-import type { SessionEntryReadSource } from "../config/sessions/session-accessor.js";
+import type { SessionEntryReadSource } from "../config/sessions/session-accessor.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatAgentRuntimeLabel } from "../shared/agent-runtime-display.js";
 import { formatGoalSummary } from "../shared/session-goal-display.js";
@@ -209,7 +209,7 @@ export function createSessionListSearchMatcher(params: {
     const selected = resolveSessionSelectedModelRef({
       cfg,
       sessionKey: storeKey,
-      source: target.modelSource,
+      source: target,
       agentId,
       rowContext: context(),
       allowPluginNormalization: false,
@@ -290,7 +290,7 @@ function loadGatewaySessionSnapshot(
     store,
     modelSource: {
       entry,
-      loadSessionEntry: createGatewaySessionEntryReader({ cfg, agentId, store, readSource }),
+      readSourceEntry: createGatewaySessionEntryReader({ cfg, agentId, store, readSource }),
     },
     key: canonicalKey,
     entry,
@@ -337,7 +337,7 @@ export function buildGatewaySessionInfo(params: {
 }): GatewaySessionRow {
   return buildGatewaySessionRow({
     ...params,
-    modelSource: { entry: params.entry, loadSessionEntry: createGatewaySessionEntryReader(params) },
+    modelSource: { entry: params.entry, readSourceEntry: createGatewaySessionEntryReader(params) },
     skipTranscriptUsageFallback: true,
     lightweightListRow: true,
   });
