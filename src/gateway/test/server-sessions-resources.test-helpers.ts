@@ -44,7 +44,10 @@ const getGatewayServerHarnessModule = createLazyRuntimeModule(
 );
 
 /** Deselect before disposal so topology publication cannot reopen a fixture store. */
-export async function releaseGatewaySessionStoreFixture(dir: string) {
+export async function releaseGatewaySessionStoreFixture(
+  dir: string,
+  options: { settleSuiteProjection?: boolean } = {},
+) {
   // Transcript observers outlive session admission; join before config changes can
   // reopen the store. This also runs in suite teardown, outside expect.poll's test context.
   await vi.waitFor(() => expect(getActiveGatewayRootWorkCount({ excludeCurrent: true })).toBe(0), {
@@ -67,13 +70,15 @@ export async function releaseGatewaySessionStoreFixture(dir: string) {
   }
   // Participant persistence outlives request roots; retain selectors until its FIFO settles.
   await drainOpenClawAgentWriteQueuesForTest(ownsPath);
-  await waitForSessionTranscriptIndexReconcilesInStateDir(root);
-  await drainOpenClawAgentWriteQueuesForTest(ownsPath);
-  const runtime = getGatewayRecoveryRuntime();
-  const context = runtime && getGatewayContextResolver(runtime)?.();
-  const projection = getSessionRowProjection(context);
-  // Unregistration invalidates canonical reader continuations as well as discovery.
-  await projection?.ensureMaterialized();
+  const runtime = options.settleSuiteProjection ? getGatewayRecoveryRuntime() : undefined;
+  const projection = getSessionRowProjection(runtime && getGatewayContextResolver(runtime)?.());
+  if (projection) {
+    await waitForSessionTranscriptIndexReconcilesInStateDir(root);
+    await drainOpenClawAgentWriteQueuesForTest(ownsPath);
+    // The chat suite keeps this projection alive across stores. Settle its readers
+    // before unregistration invalidates their canonical admission.
+    await projection.ensureMaterialized();
+  }
   if (testState.sessionStorePath && ownsPath(testState.sessionStorePath)) {
     testState.sessionStorePath = undefined;
   }
@@ -83,13 +88,16 @@ export async function releaseGatewaySessionStoreFixture(dir: string) {
     delete session.store;
     setRuntimeConfigSnapshot({ ...cfg, session });
   }
+  if (!projection) {
+    await waitForSessionTranscriptIndexReconcilesInStateDir(root);
+    await drainOpenClawAgentWriteQueuesForTest(ownsPath);
+  }
   for (const database of listOpenClawRegisteredAgentDatabases()) {
     if (isPathInside(root, database.path)) {
       unregisterOpenClawAgentDatabase(database);
     }
   }
-  // Registry removal schedules suite-owned reads outside Gateway root admission.
-  // Join the new topology and retained old reads before revoking their databases.
+  // Join topology publication before closing readers retained by the old store.
   await projection?.ensureMaterialized();
   await closeOpenClawAgentDatabasesAsync(root);
 
