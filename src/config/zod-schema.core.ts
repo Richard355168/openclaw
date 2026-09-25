@@ -635,9 +635,6 @@ export const HumanDelaySchema = z
   })
   .strict();
 
-const normalizeAllowFrom = (values?: Array<string | number>): string[] =>
-  normalizeStringEntries(values);
-
 /**
  * Closed set of sender-policy/allowFrom dependency violations. Both cases drop
  * every inbound DM at runtime, so callers surface them as config problems.
@@ -653,7 +650,7 @@ export const evaluateDmPolicyAllowFromDependency = (params: {
   policy?: string;
   allowFrom?: Array<string | number>;
 }): DmPolicyAllowFromViolation | null => {
-  const allow = normalizeAllowFrom(params.allowFrom);
+  const allow = normalizeStringEntries(params.allowFrom);
   if (params.policy === "open" && !allow.includes("*")) {
     return "open_requires_wildcard";
   }
@@ -790,19 +787,6 @@ const MediaUnderstandingModelSchema = z
 
 const ToolsMediaCapabilitySchema = z
   .object({
-    enabled: z.boolean().optional(),
-    preferredModel: z.string().trim().min(1).optional(),
-    scope: MediaUnderstandingScopeSchema,
-    maxBytes: z.number().int().positive().optional(),
-    maxChars: z.number().int().positive().optional(),
-    ...MediaUnderstandingRuntimeFields,
-    attachments: MediaUnderstandingAttachmentsSchema,
-  })
-  .strict()
-  .optional();
-
-const ToolsMediaAudioSchema = z
-  .object({
     /** Enable media understanding when models are configured. */
     enabled: z.boolean().optional(),
     /** Prefer a matching shared model entry. */
@@ -816,6 +800,12 @@ const ToolsMediaAudioSchema = z
     ...MediaUnderstandingRuntimeFields,
     /** Attachment selection policy. */
     attachments: MediaUnderstandingAttachmentsSchema,
+  })
+  .strict()
+  .optional();
+
+const ToolsMediaAudioSchema = ToolsMediaCapabilitySchema.unwrap()
+  .extend({
     /**
      * Echo the audio transcript back to the originating chat before agent processing.
      * Lets users verify what was heard. Default: false.
@@ -827,7 +817,6 @@ const ToolsMediaAudioSchema = z
      */
     echoFormat: z.string().optional(),
   })
-  .strict()
   .optional();
 
 export const ToolsMediaSchema = z
