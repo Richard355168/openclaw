@@ -231,7 +231,12 @@ editor with plugin configuration and editable **Permissions** controls; Back ret
 to the overview.
 Existing `#configuration` links still open the editor. Local controls and the
 installed README remain available when optional ClawHub metadata cannot load.
-The catalog shows featured plugins and category shelves. Search queries
+The catalog shows featured plugins and category shelves. Within each category,
+ClawHub's selected priorities appear first, followed by remaining plugins in
+download order. **View all** preserves that order. Computer use groups interactive
+desktop and browser control. Other and uncategorized plugins remain available
+through search and installed-plugin management instead of homepage sections.
+Search queries
 [ClawHub](https://clawhub.ai/plugins) without leaving the page. Catalog detail
 links use `/plugins/<catalog-id>`; installed-only links use
 `/settings/plugins/<plugin-id>`. Both show the same overview and actions.
@@ -550,7 +555,7 @@ To find an older archived conversation, choose **Sessions**, **All time**, and *
 
 Live activity keeps up to 100 sanitized summaries with redacted, truncated output previews. Tool argument values are not stored in Activity state; the UI shows that arguments are hidden and records only the argument field count.
 
-The current browser tab collects permitted incoming activity across sessions and agents while you visit other Control UI pages, including before you first open Live activity. Navigation and chat selection preserve this bounded list. Use the visible search, tool, and status filters to narrow the displayed entries. Page reload, Gateway or authentication-context change, and **Clear** reset the list. Ordinary reconnects preserve the list and expanded entries. This browser-local feed covers received events; it is not a durable record of work performed while the browser was closed or disconnected.
+Live activity collects events only while this view is open and the browser tab is visible. It watches the bounded, authorized **Active sessions** roster and releases those subscriptions when you hide the tab or leave the view. Activity from before you opened the view is not shown. Use the search, tool, and status filters to narrow received entries. Leaving the Activity page, reloading, changing Gateway or authentication context, and **Clear** reset the list. Ordinary reconnects preserve received entries and expansion state, then resume subscriptions from the refreshed roster. This browser-local feed is not a durable record of work performed while the view was closed, hidden, or disconnected.
 
 The Run inspector shows the retained trust domain, ingress, invoker, represented subject, sponsor, agent definition and principal, runtime instance, applicable grants, assurance evidence, lineage, and a bounded decision-receipt list. Every fact has a text evidence state. **Absent** means the owning boundary explicitly recorded no value; **unattributed** means a supported path had no usable invoker; **unknown** means expected evidence is missing or unreadable; and **unsupported** means the path has no Phase 0 evidence contract. Color is supplemental only.
 
