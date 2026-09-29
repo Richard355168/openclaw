@@ -6,7 +6,6 @@ import type { OpenAICompletionsOptions } from "../provider-options.js";
 import {
   createOpenAICompletionsToolCallDeltaNormalizer,
   createOpenAIEncryptedToolCallReasoningTracker,
-  extractToolCallThoughtSignature,
   finalizeOpenAICompletionsToolCalls,
 } from "../providers/openai-completions-tool-calls.js";
 import { mapOpenAIStopReason } from "../providers/openai-stop-reason.js";
@@ -49,6 +48,23 @@ import {
   type OpenAIModeModel,
 } from "./openai-transport-shared.js";
 import { iterateModelStream, throwIfModelStreamAborted } from "./transport-stream-shared.js";
+
+function extractToolCallThoughtSignature(toolCall: unknown): string | undefined {
+  const tc = toolCall as Record<string, unknown> | undefined;
+  if (!tc) {
+    return undefined;
+  }
+  const extra = (tc.extra_content as Record<string, unknown> | undefined)?.google as
+    | Record<string, unknown>
+    | undefined;
+  return (
+    readNonEmptyStringPreservingWhitespace(extra?.thought_signature) ??
+    readNonEmptyStringPreservingWhitespace(
+      (tc.function as { thought_signature?: unknown } | undefined)?.thought_signature,
+    ) ??
+    readNonEmptyStringPreservingWhitespace(tc.thought_signature)
+  );
+}
 
 // A deferred emit step for the DSML visible-text chain: text steps carry
 // their filtered piece and may be suppressed whole-frame by the replay guard;
