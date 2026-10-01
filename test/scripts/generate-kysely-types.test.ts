@@ -65,15 +65,23 @@ describe("Kysely declarations", () => {
       { cwd: root, env, encoding: "utf8" },
     );
     expect(packed.status, packed.stderr).toBe(0);
-    const [inventory] = JSON.parse(packed.stdout) as Array<{
-      filename: string;
-      files: Array<{ path: string }>;
-    }>;
+    const inventoryByName = JSON.parse(packed.stdout) as Record<
+      string,
+      {
+        filename: string;
+        files: Array<{ path: string }>;
+      }
+    >;
+    expect(Object.keys(inventoryByName)).toEqual(["openclaw"]);
+    const inventory = inventoryByName.openclaw;
+    if (!inventory) {
+      throw new Error("npm pack did not return the openclaw inventory");
+    }
     const unpacked = path.join(root, "unpacked");
     fs.mkdirSync(unpacked);
     const extracted = spawnSync(
       "tar",
-      ["-xzf", path.join(root, inventory!.filename), "-C", unpacked],
+      ["-xzf", path.join(root, inventory.filename), "-C", unpacked],
       {
         env,
         encoding: "utf8",
@@ -83,7 +91,7 @@ describe("Kysely declarations", () => {
     const packageRoot = path.join(unpacked, "package");
     expect(
       collectPackageDistImportErrors({
-        files: inventory!.files.map((file) => file.path),
+        files: inventory.files.map((file) => file.path),
         readText: (file: string) => fs.readFileSync(path.join(packageRoot, file), "utf8"),
       }),
     ).toEqual([]);
@@ -102,6 +110,30 @@ describe("Kysely declarations", () => {
     const missing = run("scripts/generate-kysely-types.mts");
     expect(missing.status).toBe(1);
     expect(missing.stderr).toContain("direct-run.mjs");
+  });
+
+  it("retires omitted sparse projections and still requires complete generation", async () => {
+    const { root, schemas, output } = createSchemaFixture();
+    const agentOutput = path.join(root, ".artifacts/kysely/openclaw-agent-db.generated.ts");
+    await ensureKyselyTypes(root);
+    fs.unlinkSync(schemas[1]!);
+    await ensureKyselyTypes(root, false, { allowPartialCheckout: true });
+    expect(fs.readFileSync(output, "utf8")).toContain("export interface Records");
+    expect(fs.existsSync(agentOutput)).toBe(false);
+    await expect(ensureKyselyTypes(root)).rejects.toThrow("openclaw-agent-schema.sql");
+    await expect(ensureKyselyTypes(root, true, { allowPartialCheckout: true })).rejects.toThrow(
+      "openclaw-agent-schema.sql",
+    );
+    fs.writeFileSync(schemas[1]!, `${schema}\nALTER TABLE records ADD COLUMN restored TEXT;`);
+    await ensureKyselyTypes(root);
+    expect(fs.readFileSync(agentOutput, "utf8")).toContain("  restored: string | null;");
+    for (const source of schemas) {
+      fs.unlinkSync(source);
+    }
+    await ensureKyselyTypes(root, false, { allowPartialCheckout: true });
+    expect(fs.existsSync(output)).toBe(false);
+    expect(fs.existsSync(agentOutput)).toBe(false);
+    expect(fs.existsSync(path.join(root, ".artifacts/kysely/inputs.sha256"))).toBe(false);
   });
 
   it("skips source-less installs but rejects an incomplete schema checkout", async () => {
