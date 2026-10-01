@@ -355,6 +355,19 @@ const CUMULATIVE_TEXT_DELTA_REPLAY_MIN_CHARS = 8;
  * that continues must never be classified on its own.
  */
 export function createCumulativeReplayGuard(enabled: boolean) {
+  if (!enabled) {
+    // The guard is opt-in per model; disabled streams must pay neither the
+    // ledger's text accumulation nor the equality comparison on any frame.
+    return {
+      classifyFrame(_visible: string, _opensTextBlock: boolean, _frameComplete: boolean): boolean {
+        return true;
+      },
+      admitTextDelta(_text: string, _opensTextBlock: boolean, _compare: boolean): boolean {
+        return true;
+      },
+      onTextStart(): void {},
+    };
+  }
   let acceptedText = "";
   let textBlockStartLength = 0;
   let textBlockStartPending = false;

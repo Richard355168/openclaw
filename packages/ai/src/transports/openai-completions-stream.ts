@@ -535,23 +535,46 @@ export async function processCompletionsStream(
         appendReasoningDeltas(reasoningDeltas);
       }
       // Some providers resend accumulated text as one bare delta; appending it
-      // doubles output. Visible text streams through the parser and DSML chain
-      // into a pending segment plan, and the guard classifies each segment's
-      // whole filtered visible contribution before it streams — at reasoning
-      // transitions and at the end of the content parts, so block structure,
-      // event ordering, and the post-tool-call queue match the unguarded
-      // sequence. A settled restatement drops its visible pieces while its
-      // recovered tool calls still flow; an unsettled segment always flows.
+      // doubles output. With the guard enabled, visible text streams through
+      // the parser and DSML chain into a pending segment plan, and the guard
+      // classifies each segment's whole filtered visible contribution before
+      // it streams — at reasoning transitions and at the end of the content
+      // parts, so block structure, event ordering, and the post-tool-call
+      // queue match the unguarded sequence. A settled restatement drops its
+      // visible pieces while its recovered tool calls still flow; an
+      // unsettled segment always flows. With the guard disabled, pieces emit
+      // directly as they arrive — the opt-in repair must not add planning,
+      // allocation, or ledger cost to ordinary streams.
+      const guardEnabled = compat.dropCumulativeTextDeltaReplays;
       let plan: DsmlChainStep[] = [];
+      const emitRecoveredText = (recovered: DeepSeekDsmlRecoveredPart[]) => {
+        for (const recoveredPart of recovered) {
+          if (recoveredPart.kind === "toolCall") {
+            appendRecoveredToolCall(recoveredPart);
+            continue;
+          }
+          for (const part of deepSeekTextFilter?.push(recoveredPart.text) ?? [recoveredPart.text]) {
+            appendVisibleTextDelta(part);
+          }
+        }
+      };
       const planRouted = (routed: ReasoningTagTextDelta[]) => {
         for (const piece of routed) {
           if (piece.kind !== "text") {
             continue;
           }
-          planRecoveredText(dsmlRecoverer?.push(piece.text) ?? [textPart(piece.text)], plan);
+          const recovered = dsmlRecoverer?.push(piece.text) ?? [textPart(piece.text)];
+          if (guardEnabled) {
+            planRecoveredText(recovered, plan);
+          } else {
+            emitRecoveredText(recovered);
+          }
         }
       };
       const settlePlan = () => {
+        if (!guardEnabled) {
+          return;
+        }
         const admitted = classifyFrame(plan.reduce((text, step) => text + (step.text ?? ""), ""));
         for (const step of plan.filter((candidate) => admitted || candidate.text === undefined)) {
           step.emit();
