@@ -259,9 +259,10 @@ judgment and move the repeatable parts into code:
 - When a run fails, make it fail instead of posting the error yourself: throw from
   trigger or script payload JavaScript, or exit non-zero from a command payload. A
   script that returns an error field still succeeds. The scheduler owns failure
-  accounting:
-  [failure notifications](/automation/cron-jobs/delivery#failure-notifications)
-  already wait for consecutive failed runs, so a one-off outage stays quiet.
+  accounting: only the
+  [failure alert](/automation/cron-jobs/delivery#failure-notifications) waits for
+  consecutive failed runs; the run's own output still follows the job's delivery
+  setting.
 
 ## Execution styles
 
@@ -303,7 +304,7 @@ Agent-turn jobs default to the creating conversation when the create request car
     A new transcript/session id per run. OpenClaw carries safe preferences (thinking/fast/verbose settings, labels, explicit user-selected model/auth overrides), but does not inherit ambient conversation context from an older automation session row: channel/group routing, send or queue policy, elevation, origin, or ACP runtime binding. Use `current` or `session:<id>` when a recurring job should deliberately build on the same conversation context.
   </Accordion>
   <Accordion title="Unattended run contract">
-    Isolated automation and hook agent turns are explicitly unattended: no one is present to clarify or approve. The final reply must be the deliverable rather than a plan, acknowledgement, or request for input. The agent returns `NO_REPLY` when nothing needs doing. When the task failed or is blocked, the reply starts with `AUTOMATION_FAILED` on its own line, followed by what failed and what it tried. The scheduler records that run as an error with the remaining text as its error, delivers that text instead of the token when the job announces, and applies the normal retry, failure-alert, and owner-repair policy. Only an exact first line counts; a reply that mentions the token elsewhere is ordinary output.
+    Isolated automation and hook agent turns are explicitly unattended: no one is present to clarify or approve. The final reply must be the deliverable rather than a plan, acknowledgement, or request for input. The agent returns `NO_REPLY` when nothing needs doing. When the task failed or is blocked, the reply starts with `AUTOMATION_FAILED` on its own line, followed by what failed and what it tried. The scheduler records that run as an error with the remaining text as its error, delivers that text instead of the token when the job announces, and applies the normal retry, failure-alert, and owner-repair policy. When the run hands its work to a subagent, the child's settled final answer is classified the same way. Only an exact first line counts; a reply that mentions the token elsewhere is ordinary output.
 
     For trusted scheduled jobs, the job's own instructions win when they intentionally ask for a question or plan, and the agent may remove a job that is no longer needed. External hook turns receive only the common unattended contract; they do not receive that override or self-removal guidance across the external-content boundary.
 
