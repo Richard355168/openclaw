@@ -21,6 +21,22 @@ const excluded =
   /(?:^|\/)(?:__tests__|__fixtures__|test|tests|test-utils|test-helpers|test-support|test-fixtures|test-harness|fixtures|e2e)(?:\/|$)|(?:^|[/.-])(?:test|spec|e2e|test-support|test-helpers|test-fixtures|test-harness|test-runtime)(?:[.-])/;
 const reviewed = new Map([
   [
+    "src/gateway/mention-inbox-store.ts",
+    {
+      priority: 3,
+      evidence:
+        "Worker-backed bundled callers; deprecated 2026.9.8 synchronous Mention Inbox SDK kernel until next SDK major",
+    },
+  ],
+  [
+    "src/gateway/mention-inbox.native.ts",
+    {
+      priority: 3,
+      evidence:
+        "Deprecated 2026.9.8 synchronous Mention Inbox SDK transaction; removal at next SDK major",
+    },
+  ],
+  [
     "src/state/user-profiles.ts",
     { priority: 1, evidence: "Profile creation; write-coordination cutover owned separately" },
   ],
@@ -366,7 +382,17 @@ const reviewedOperations = new Map([
           "isSessionStateUpstreamCurrentInDatabase",
         ],
         evidence:
-          "session-state-events.worker.ts:146,147 and session-upstream-links.worker.ts:18,25; shared event/prune and child-spawn seed sites stay T1",
+          "session-state-events.worker.ts and session-upstream-links.worker.ts; event/head SQL retains native adopted-event callers",
+      },
+      {
+        tier: "W",
+        operations: [
+          "upsertSeedCursor",
+          "pruneSessionStateEventsInDatabase",
+          "pruneSessionStateEventsInDatabase.stampPrunedWatermarks",
+        ],
+        evidence:
+          "Seed cursors run through sessionState.record/registerWatch; periodic and restart pruning dispatch sessionState.prune; adopted-event/native-binding producers remain native",
       },
       {
         tier: "W",
@@ -390,6 +416,25 @@ const reviewedOperations = new Map([
         tier: "T2",
         operations: ["sweepSessionStateWatchNotices"],
         evidence: "Restart sweep only called by server-startup-observers.ts:58",
+      },
+    ],
+  ],
+  [
+    "src/skills/library/store.ts",
+    [
+      {
+        tier: "W",
+        operations: [
+          "ensureSkillLibrarySchema",
+          "requireSelectedSkillLibraryUpload",
+          "selectSkillLibraryRow",
+          "selectSkillLibraryRevision",
+          "selectSkillLibraryRevisionMetadata",
+          "assertSkillLibraryNameAvailable",
+          "recordSkillLibraryEvent",
+        ],
+        evidence:
+          "Library row, revision, upload, and mutation kernels run only through the shared-state reader/writer; the SDK metadata batch remains in selection-read.kernel.ts",
       },
     ],
   ],
@@ -567,6 +612,7 @@ const reviewedOperations = new Map([
   ],
 ]);
 const workerModules = new Set([
+  "src/skills/library/import.kernel.ts", // Upload commands execute only in the shared-state writer.
   "src/skills/library/service.kernel.ts", // Library catalog and revision reads use the shared-state read registry.
   "src/config/sessions/conversation-delivery-store.kernel.ts", // Agent execution registry writes and session transcript worker reads only.
   "extensions/memory-core/src/memory-entry-origin-reads.ts", // Memory search worker origin-read commands only.
