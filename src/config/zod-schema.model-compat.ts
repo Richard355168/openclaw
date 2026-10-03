@@ -172,7 +172,9 @@ export const ModelCompatSchema = z
     /**
      * Drops cumulative text-delta replays: provider frames whose single `text_delta` equals all
      * text accumulated so far (a full-content replay, not an increment), which naive accumulation
-     * would double into the live message. Default: false (stock provider behavior is preserved).
+     * would double into the live message. The check compares content only, so an intentional
+     * repeat of the whole message so far (8+ characters, delivered as one frame) is also dropped.
+     * Enable only for providers known to replay. Default: false (stock provider behavior is preserved).
      */
     dropCumulativeTextDeltaReplays: z.boolean().optional(),
   })
