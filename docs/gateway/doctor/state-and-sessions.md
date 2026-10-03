@@ -13,7 +13,7 @@ auth health, sandbox images, and plugin installs.
 
 <AccordionGroup>
   <Accordion title="3. Legacy state migrations (disk layout)">
-    Supported upgrade sources are state shapes written by releases shipped on or after July 1, 2026. Session rows that still need `provider`, `lastProvider`, or `room` converted to their current fields are refused without changing the original store. Preserve a backup and use an older OpenClaw release to migrate those rows before upgrading. Rows with current fields remain supported even when obsolete metadata remains alongside them. July-era `sessions.json` and JSONL transcript imports remain supported.
+    Supported upgrade sources are state shapes written by releases shipped on or after July 1, 2026. The July Doctor importer could still leave `provider` and `lastProvider` aliases on session rows. Session reads refuse those rows with a migration-required error until `openclaw doctor --fix` runs; Doctor backs up the affected SQLite databases, then rewrites the aliases into the canonical `delivery` state and its query projections together. Rows that still need the retired `room` → `groupChannel` conversion are refused without changing the original store: preserve the state, install OpenClaw `2026.9.5`, run `openclaw doctor --fix`, then upgrade again. Rows with current fields remain supported even when obsolete metadata remains alongside them. July-era `sessions.json` and JSONL transcript imports remain supported.
 
     Doctor can migrate supported on-disk layouts into the current structure:
 
@@ -37,6 +37,8 @@ auth health, sandbox images, and plugin installs.
     Legacy session-file import and repair belong to Doctor. Gateway startup checks readiness without importing those files; runtime session access uses only SQLite. An unreadable legacy session index and its transcripts remain at their original paths, and repeated startups refuse readiness with the Doctor command for the active profile. Stop the Gateway, back up its state, repair the named source, and run `openclaw doctor --fix` before restarting it. The [targeted migration sequence](/cli/doctor#session-sqlite-migration) provides inspection and validation evidence. Current SQLite maintenance does not require legacy files to remain on disk.
 
     When an unavailable plugin still needs legacy session files, Doctor retains those originals after verifying the core import. Startup accepts the retained files only when their session owners have matching verified imports. An unused configured agent does not need an empty database for another agent's history. Changed, unassigned, or unimported source rows still require repair before startup.
+
+    Deferred session import receipts bind the database inode and supported creation time, so a virtual filesystem device-number change after reboot does not invalidate a verified import. Retained source files keep their SHA-256 and size checks; normal SQLite edits and deletions remain authoritative. Doctor's import/recovery pass upgrades older device-and-inode receipts once in the existing receipt JSON. If the old physical identity no longer matches, Doctor verifies retained sources against canonical history before rebinding. A changed or incomplete database keeps its recovery warning and cannot replay retained sessions.
 
     Doctor retains one prepared plugin selection through planning and post-session repair. A deferred external plugin stays deferred while admitted plugins complete their repairs; changing maintenance scopes does not add unplanned actions or block an update with an action-order mismatch. When no plugin migration is deferred and no verified legacy session source is retained, the post-session plugin repair runs its detectors once and skips the completion certification pass. Gateway startup reports pending repairs without executing them.
 
@@ -101,7 +103,7 @@ auth health, sandbox images, and plugin installs.
     Doctor scans all installed plugin manifests for deprecated top-level capability keys (`speechProviders`, `realtimeTranscriptionProviders`, `realtimeVoiceProviders`, `mediaUnderstandingProviders`, `imageGenerationProviders`, `videoGenerationProviders`, `webFetchProviders`, `webSearchProviders`). When found, it offers to move them into the `contracts` object and rewrite the manifest file in-place. This migration is idempotent; if `contracts` already has the same values, the legacy key is removed without duplicating data.
   </Accordion>
   <Accordion title="3b. Legacy cron store migrations">
-    Doctor also checks the legacy cron job store (`~/.openclaw/cron/jobs.json`) for old job shapes before importing canonical rows into SQLite.
+    Doctor repairs supported historical shapes in SQLite cron rows and imports supported `jobs-quarantine.json` sidecars. Retired `jobs.json`, `jobs-state.json`, and `runs/*.jsonl` files require an intermediate upgrade through `2026.9.7`; Doctor preserves them and stops before cron repair. See the [retention policy](/gateway/doctor/config-migrations#retention-policy).
 
     Current cron cleanups include:
 

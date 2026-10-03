@@ -218,6 +218,27 @@ describe("splitMediaFromOutput", () => {
     expectParsedMediaOutputCase(input, { mediaUrls: [...mediaUrls] });
   });
 
+  it.each([
+    ['MEDIA:["/tmp/a.png","/tmp/b.png"]', ["/tmp/a.png", "/tmp/b.png"]],
+    ['MEDIA: ["/tmp/a.png", "/tmp/b.png"]', ["/tmp/a.png", "/tmp/b.png"]],
+    ['MEDIA:["/tmp/a.png","/tmp/b.png","/tmp/c.png"]', ["/tmp/a.png", "/tmp/b.png", "/tmp/c.png"]],
+    ['MEDIA:["first.png","second.png"]', ["first.png", "second.png"]],
+    [
+      'MEDIA:["/tmp/first image.png","/tmp/second image.png"]',
+      ["/tmp/first image.png", "/tmp/second image.png"],
+    ],
+    ['MEDIA:["/tmp/render,final.png","/tmp/b.png"]', ["/tmp/render,final.png", "/tmp/b.png"]],
+    ['MEDIA:["/tmp/a.png"]', ["/tmp/a.png"]],
+  ] as const)("attaches every reference a serialized JSON array states: %s", (input, mediaUrls) => {
+    // A reply that pastes a serialized array onto the directive states its references with the same quote
+    // pairs as the quoted comma list above, so each member is a reference of its own. Only the compact
+    // spelling was read: the leading `[` made the list scan report "no list", and `cleanCandidate`'s
+    // serialized-JSON salvage then cut the payload at the last extension before a comma-delimited quote, so
+    // `MEDIA:["/tmp/a.png","/tmp/b.png"]` attached one file and dropped the rest with no failure recorded,
+    // while the same array written with a space after each comma attached both.
+    expectParsedMediaOutputCase(input, { mediaUrls: [...mediaUrls] });
+  });
+
   it("separates every quoted member of a list, bare filenames included", () => {
     // A bare filename is a reference on its own — `MEDIA:"second.png"` attaches it — so quoting two of them
     // states two references, not one. Validating a member as if it were unquoted dropped it, and the
@@ -243,6 +264,60 @@ describe("splitMediaFromOutput", () => {
       mediaUrls: ["/tmp/first.png"],
       text: '"second"',
     });
+  });
+
+  it("separates quoted references that a comma divides", () => {
+    // A comma already reads as list punctuation on an unquoted line: `cleanCandidate` trims it from a
+    // reference's tail, so `MEDIA:/tmp/first.png, /tmp/second.png` gives two attachments. Quoting each
+    // reference moves that comma outside the quote pair, where the list scan gave it no meaning, so the
+    // pair fell back to the whole-payload reading and attached one
+    // `/tmp/first image.png", "/tmp/second image.png` — the two attachments that the space-separated list
+    // of the same references produces.
+    expectParsedMediaOutputCase("MEDIA:/tmp/first.png, /tmp/second.png", {
+      mediaUrls: ["/tmp/first.png", "/tmp/second.png"],
+    });
+    for (const [input, mediaUrls] of [
+      [
+        'MEDIA:"/tmp/first image.png", "/tmp/second image.png"',
+        ["/tmp/first image.png", "/tmp/second image.png"],
+      ],
+      ['MEDIA:"/tmp/a.png","/tmp/b.png"', ["/tmp/a.png", "/tmp/b.png"]],
+      ['MEDIA:"/tmp/first.png", "second.png"', ["/tmp/first.png", "second.png"]],
+      ["MEDIA:'/tmp/a.png', '/tmp/b.png'", ["/tmp/a.png", "/tmp/b.png"]],
+      ['MEDIA:"/tmp/a.png", "b.png", "c.png"', ["/tmp/a.png", "b.png", "c.png"]],
+    ] as const) {
+      expectParsedMediaOutputCase(input, { mediaUrls: [...mediaUrls] });
+    }
+    // A member that is not a reference of its own stays visible text rather than joining its neighbour,
+    // which is what the space-separated list already does.
+    expectParsedMediaOutputCase('MEDIA:"/tmp/first.png", "second"', {
+      mediaUrls: ["/tmp/first.png"],
+      text: '"second"',
+    });
+    // A comma inside one quoted reference stays part of its value, not a separator.
+    expectAcceptedMediaPathCase("/tmp/Hello, World.png", 'MEDIA:"/tmp/Hello, World.png"');
+    // Prose behind the comma is a token no quote pair bounds, so no list forms and `main`'s reading of the
+    // payload stands.
+    expectParsedMediaOutputCase('MEDIA:"/tmp/first.png", the picture above', {
+      mediaUrls: ["/tmp/first.png"],
+    });
+    // A comma divides references only when the next reference is quoted behind it. Here the character
+    // before the comma is an apostrophe belonging to the directory name (`Students', 2024`), and `main`
+    // delivers both of these references, so the first one has to run to its real closing quote rather than
+    // end at that apostrophe and leave an unquoted fragment that welds the pair into one path.
+    expectParsedMediaOutputCase("MEDIA:'/tmp/Students', 2024/album.png' '/tmp/second.png'", {
+      mediaUrls: ["/tmp/Students', 2024/album.png", "/tmp/second.png"],
+    });
+    // With a quoted reference behind it the same comma is list punctuation, as this form's unquoted and
+    // space-separated siblings already read it.
+    expectParsedMediaOutputCase("MEDIA:'/tmp/Students', 2024/album.png', '/tmp/second.png'", {
+      mediaUrls: ["/tmp/Students', 2024/album.png", "/tmp/second.png"],
+    });
+    // One reference needs no following quote, so an apostrophe before a comma stays inside its value.
+    expectAcceptedMediaPathCase(
+      "/tmp/Students', 2024/album.png",
+      "MEDIA:'/tmp/Students', 2024/album.png'",
+    );
   });
 
   it.each([
