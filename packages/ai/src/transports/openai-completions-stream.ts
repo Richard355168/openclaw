@@ -539,8 +539,14 @@ export async function processCompletionsStream(
           }
         } else {
           const hasLaterVisibleText = contentDeltaIndex < lastVisibleTextIndex;
-          beginReasoning(hasLaterVisibleText);
+          if (reasoningTagTextPartitioner.hasPending()) {
+            reasoningTagTextPartitioner.markStrict();
+          }
+          if (!hasLaterVisibleText || !reasoningTagTextPartitioner.hasPendingSyntax()) {
+            flushReasoningTagTextPartitioner();
+          }
           settleDsmlPlan();
+          beginReasoning(hasLaterVisibleText);
           if (emitReasoning) {
             if (currentBlock?.type === "toolCall" && !directMode) {
               queuePostToolCallDelta(contentDelta);
