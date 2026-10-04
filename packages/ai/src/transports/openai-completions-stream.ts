@@ -527,6 +527,7 @@ export async function processCompletionsStream(
       const hasSameChunkVisibleText = reasoningBatch.hasVisibleText || lastVisibleTextIndex !== -1;
       if (hasReasoningThinking) {
         beginReasoning(hasSameChunkVisibleText, true);
+        settleDsmlPlan();
         appendReasoningDeltas(reasoningDeltas);
       }
       for (const [contentDeltaIndex, contentDelta] of contentDeltas.entries()) {

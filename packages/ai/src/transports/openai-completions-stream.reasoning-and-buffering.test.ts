@@ -317,6 +317,56 @@ describe("openai completions stream", () => {
     },
   );
 
+  it("orders flushed text before resumed reasoning fields with replays enabled", async () => {
+    // Strict parsing holds "Interim." across its chunk; the resumed reasoning
+    // frame's seal flush releases it into the deferred replay plan. The plan
+    // must settle before the reasoning field emits, or Second. streams ahead
+    // of Interim. and the two thinking fields merge across the missing text
+    // boundary.
+    const model = makeCompletionsModel({
+      id: "test/replay-deferred-flush-ordering",
+      name: "Replay Deferred Flush Ordering",
+      provider: "test",
+      baseUrl: "https://test.invalid/v1",
+      reasoning: true,
+      compat: { dropCumulativeTextDeltaReplays: true } as Record<string, unknown>,
+    });
+    const output = createAssistantOutput(model);
+    const emitted: string[] = [];
+    await processCompletionsStream(
+      streamChunks([
+        makeCompletionsChunk({ reasoning_content: "First." }),
+        makeCompletionsChunk({ content: "Interim." }),
+        makeCompletionsChunk({ reasoning_content: "Second." }),
+        makeCompletionsChunk({ content: "Final." }),
+        makeCompletionsChunk({}, "stop"),
+      ]),
+      output,
+      model,
+      {
+        push(event) {
+          if (event.type === "text_delta" || event.type === "thinking_delta") {
+            emitted.push(`${event.type}:${event.delta}`);
+          }
+        },
+      },
+      { strictReasoningTags: true },
+    );
+
+    expect(emitted).toEqual([
+      "thinking_delta:First.",
+      "text_delta:Interim.",
+      "thinking_delta:Second.",
+      "text_delta:Final.",
+    ]);
+    expect(output.content.map((block) => block.type)).toEqual([
+      "thinking",
+      "text",
+      "thinking",
+      "text",
+    ]);
+  });
+
   it("phases text interrupted by resumed reasoning_details", async () => {
     const model = makeCompletionsModel({
       id: "openrouter/qwen/qwen3-235b-a22b",
