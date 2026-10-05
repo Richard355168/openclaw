@@ -365,6 +365,18 @@ describe("openai completions stream", () => {
       "thinking",
       "text",
     ]);
+    // The deferred plan must materialize Interim. before the seal records the
+    // interrupted-text boundary, or both text blocks end up unphased.
+    const textBlocks = output.content
+      .filter((block) => block.type === "text")
+      .map((block) => block as { text: string; textSignature?: string });
+    expect(textBlocks.map((block) => block.text)).toEqual(["Interim.", "Final."]);
+    expect(textBlocks[0]?.textSignature).toMatch(
+      /^\{"v":1,"id":"commentary-0-[0-9a-f]{24}","phase":"commentary"\}$/u,
+    );
+    expect(textBlocks[1]?.textSignature).toMatch(
+      /^\{"v":1,"id":"final-answer-0-[0-9a-f]{24}","phase":"final_answer"\}$/u,
+    );
   });
 
   it("phases text interrupted by resumed reasoning_details", async () => {

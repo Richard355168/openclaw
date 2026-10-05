@@ -417,6 +417,11 @@ export async function processCompletionsStream(
       return;
     }
     flushReasoningTagTextPartitioner();
+    // The flush may release strict-buffered text into the deferred replay
+    // plan. Materialize it here, before the interrupted-text boundary is
+    // recorded, so the resumed reasoning field cannot stream ahead of it and
+    // the released text keeps its commentary phase.
+    settleDsmlPlan();
     if (currentBlock?.type !== "text") {
       return;
     }
@@ -527,7 +532,6 @@ export async function processCompletionsStream(
       const hasSameChunkVisibleText = reasoningBatch.hasVisibleText || lastVisibleTextIndex !== -1;
       if (hasReasoningThinking) {
         beginReasoning(hasSameChunkVisibleText, true);
-        settleDsmlPlan();
         appendReasoningDeltas(reasoningDeltas);
       }
       for (const [contentDeltaIndex, contentDelta] of contentDeltas.entries()) {
