@@ -78,29 +78,16 @@ export {
   buildSessionContext,
   getLatestCompactionEntry,
   migrateSessionEntries,
-  normalizeLoadedFileEntry,
   parseSessionEntries,
 } from "./session-manager-codec.js";
 export type {
   BranchSummaryEntry,
   CompactionEntry,
-  CustomEntry,
-  CustomMessageEntry,
   FileEntry,
-  LabelEntry,
-  ModelChangeEntry,
-  NewSessionOptions,
-  ResetEntry,
-  ResetReason,
-  SessionContext,
   SessionEntry,
-  SessionEntryBase,
   SessionHeader,
-  SessionInfoEntry,
   SessionLeafControl,
   SessionMessageEntry,
-  SessionTreeNode,
-  ThinkingLevelChangeEntry,
 } from "./session-manager-types.js";
 
 export class SessionManager extends SessionManagerBranching {
@@ -109,10 +96,9 @@ export class SessionManager extends SessionManagerBranching {
     persistenceTarget?: SessionManagerPersistenceTarget,
     loadedEntries?: readonly unknown[],
     boundedContext?: SessionManagerBoundedContext,
-    transcriptMutationAt?: number | null,
     version?: SessionTranscriptContextVersion,
   ) {
-    super(cwd, persistenceTarget, loadedEntries, boundedContext, transcriptMutationAt, version);
+    super(cwd, persistenceTarget, loadedEntries, boundedContext, version);
     this.retainTranscriptWriter();
   }
 
@@ -493,7 +479,6 @@ export class SessionManager extends SessionManagerBranching {
       hydration.target,
       entries,
       undefined,
-      prepared.snapshot.version.updatedAt,
       prepared.snapshot.version,
     );
   }
@@ -522,7 +507,6 @@ export class SessionManager extends SessionManagerBranching {
       capturedTarget,
       entries,
       undefined,
-      snapshot.version.updatedAt,
       snapshot.version,
     );
   }
