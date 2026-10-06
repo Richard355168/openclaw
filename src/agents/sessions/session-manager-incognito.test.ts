@@ -338,9 +338,9 @@ it("rejects context disclosure when its admission closes during the awaited cons
       await manager.appendMessageAsync(makeUserMessage("private admitted context", 1));
       await expect(
         SessionManager.readSessionContextAsync(target, async (messages) => {
-          expect([...messages]).toMatchObject([{ content: "private admitted context" }]);
           await Promise.resolve();
           admission.abort(new Error("context admission closed"));
+          expect(() => [...messages]).toThrow("context admission closed");
           return "revoked context result";
         }),
       ).rejects.toThrow("context admission closed");
@@ -358,7 +358,7 @@ it("publishes model context before following work enters its actor", async () =>
     const history = actor.sessions.history;
     const forward: typeof history = async (grant, command, signal, onRead) => {
       const result = await history(grant, command, signal, onRead);
-      if (command.type === "session.history.native-context-current") {
+      if (onRead) {
         await actor.run(authority, async () => {
           order.push("following actor work");
         });

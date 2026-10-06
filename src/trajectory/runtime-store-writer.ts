@@ -15,10 +15,8 @@ import {
   resolveSqliteSessionKey,
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
-import {
-  isNativeSessionEntryRead,
-  withSessionEntriesFromStoresInWorker,
-} from "../config/sessions/session-entry-read-runtime.js";
+import { isNativeSessionEntryRead } from "../config/sessions/session-entry-read-request.js";
+import { withSessionEntriesFromStoresInWorker } from "../config/sessions/session-entry-read-runtime.js";
 import { resolveStateDir } from "../config/state-dir.js";
 import { SqliteWorkerError } from "../infra/sqlite-worker-contract.js";
 import {
@@ -34,7 +32,7 @@ import type {
 import { readOpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
 import {
   getOpenClawAgentDatabaseIfOpen,
-  withOpenClawAgentDatabaseAsync,
+  withOpenClawAgentDatabaseRuntime,
 } from "../state/openclaw-agent-db.js";
 import type { AgentDatabaseRequestExecutionSource } from "../state/openclaw-agent-execution-contract.js";
 import {
@@ -46,7 +44,6 @@ import {
   runOpenClawAgentWriteAdmission,
 } from "../state/openclaw-agent-write-admission.js";
 import { scheduleSqliteTrajectoryRuntimeRetention } from "./runtime-retention.js";
-import type { TrajectoryRuntimeRetentionRevision } from "./runtime-retention.sqlite.js";
 import {
   appendSqliteTrajectoryRuntimeEvents,
   type SqliteTrajectoryRuntimeAppend,
@@ -63,12 +60,6 @@ type TrajectoryRuntimeSinkParams = {
   assertCommitAllowed?: () => void;
 };
 
-type TrajectoryRuntimeSink = {
-  describeFlushState: () => string | undefined;
-  flush: () => Promise<void>;
-  write: (event: TrajectoryEvent, line: string) => void;
-};
-
 function captureTrajectoryTarget(params: TrajectoryRuntimeSinkParams) {
   return params.sessionTarget
     ? {
@@ -80,9 +71,7 @@ function captureTrajectoryTarget(params: TrajectoryRuntimeSinkParams) {
     : undefined;
 }
 
-export async function createSqliteTrajectoryRuntimeSink(
-  input: TrajectoryRuntimeSinkParams,
-): Promise<TrajectoryRuntimeSink | null> {
+export async function createSqliteTrajectoryRuntimeSink(input: TrajectoryRuntimeSinkParams) {
   const params = {
     ...input,
     env: { ...input.env, OPENCLAW_STATE_DIR: resolveStateDir(input.env) },
@@ -132,7 +121,7 @@ function buildSqliteTrajectoryRuntimeSink(
   params: TrajectoryRuntimeSinkParams,
   readEntry: typeof loadSessionEntry,
   preparedDatabase?: OpenClawAgentDatabaseOptions,
-): TrajectoryRuntimeSink | null {
+) {
   const target = captureTrajectoryTarget(params);
   const legacyMarker = parseSqliteSessionFileMarker(params.sessionFile);
   const completeTarget = Boolean(
@@ -226,7 +215,7 @@ function buildSqliteTrajectoryRuntimeSink(
         if (pendingEvents.size === 0) {
           return;
         }
-        await withOpenClawAgentDatabaseAsync(databaseOptions, async (database) => {
+        await withOpenClawAgentDatabaseRuntime(databaseOptions, async (database) => {
           // Admission transfers the batch; later arrivals cannot evict accepted rows.
           const batch = { events: pendingEvents, bytes: queuedBytes, discardPrevious };
           inFlight = batch;
@@ -323,7 +312,7 @@ function buildSqliteTrajectoryRuntimeSink(
       backgroundFailed = false;
       await flushPending();
     },
-    write: (event, line) => {
+    write: (event: TrajectoryEvent, line: string) => {
       const bytes = Buffer.byteLength(line, "utf8") + 1;
       pendingEvents.set(event, bytes);
       queuedBytes += bytes;
@@ -395,13 +384,12 @@ async function appendSqliteTrajectoryRuntimeEventsInWorker(
       };
     },
   };
-  let retentionRevision: TrajectoryRuntimeRetentionRevision | undefined;
   try {
     await runOpenClawAgentWorkerWrite(options, async () => {
       const written = await execution.runExisting(source, async (worker) => {
         let completed = false;
         try {
-          retentionRevision = await worker.execute({ type: "trajectory.events.append", input });
+          await worker.execute({ type: "trajectory.events.append", input });
           completed = true;
         } finally {
           if (transaction) {
@@ -421,15 +409,12 @@ async function appendSqliteTrajectoryRuntimeEventsInWorker(
         throw new Error("Trajectory database disappeared before append");
       }
     });
-    if (retentionRevision) {
-      void scheduleSqliteTrajectoryRuntimeRetention({
-        database,
-        options,
-        input,
-        revision: retentionRevision,
-        assertCurrent: assertDatabaseCurrent,
-      });
-    }
+    void scheduleSqliteTrajectoryRuntimeRetention({
+      database,
+      options,
+      input,
+      assertCurrent: assertDatabaseCurrent,
+    });
   } finally {
     await execution.release();
   }
