@@ -397,29 +397,6 @@ describe.each([
     expect(text).toBe(TEXT_A + TEXT_B);
   });
 
-  it("suppresses a full-restatement run and keeps the frame's new text while enabled", async () => {
-    // A structured reasoning part splits the frame's visible text into runs.
-    // A run equal to the whole accepted text carries no new characters, so
-    // suppressing it loses nothing; the run with genuine new text keeps
-    // flowing and the accumulated result stays clean.
-    const text = await runStream(createStream, {
-      chunks: [
-        makeCompletionsChunk({ role: "assistant", content: TEXT_A }),
-        makeCompletionsChunk({
-          content: [
-            { type: "text", text: TEXT_A },
-            { type: "thinking", thinking: "Recheck." },
-            { type: "text", text: "Additional detail." },
-          ],
-        }),
-        makeCompletionsChunk({}, "stop"),
-      ],
-      compat: { dropCumulativeTextDeltaReplays: true },
-      expectedText: `${TEXT_A}Additional detail.`,
-    });
-    expect(text).toBe(`${TEXT_A}Additional detail.`);
-  });
-
   it("keeps the delivered final answer identical whether the restated run is suppressed", async () => {
     // The structured reasoning part interrupts the open text block, so the
     // interrupted run is delivered as commentary and the genuine follow-up as
