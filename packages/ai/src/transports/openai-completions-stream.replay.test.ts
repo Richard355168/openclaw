@@ -464,6 +464,28 @@ describe("managed cumulative text delta replays with DSML recovery", () => {
     resetDiagnosticRunActivityForTest();
   });
 
+  it("keeps a prefix released before an open DSML suppression span", async () => {
+    // Consuming the open marker empties the filter buffer while the
+    // suppression span stays open (close token set). The pending-state check
+    // must include the open span, or the released prefix gets classified as a
+    // complete replay and dropped instead of surviving as the incomplete
+    // frame's prefix.
+    const text = await runStream(createOpenAICompletionsTransportStreamFn(), {
+      chunks: [
+        makeCompletionsChunk({ role: "assistant", content: "Knock knock. " }),
+        makeCompletionsChunk({ content: "Knock knock. <|DSML|tool_use_error>" }),
+        makeCompletionsChunk({ content: "hidden</|DSML|tool_use_error>tail" }),
+        makeCompletionsChunk({}, "stop"),
+      ],
+      compat: {
+        dropCumulativeTextDeltaReplays: true,
+        thinkingFormat: "deepseek",
+      },
+      expectedText: "Knock knock. Knock knock. tail",
+    });
+    expect(text).toBe("Knock knock. Knock knock. tail");
+  });
+
   it("keeps a prefix released while DSML recovery holds a possible token", async () => {
     // A frame ending in a partial DSML tool token makes the recovery stage
     // hold the suffix and release only the prefix; that piece can restate the
