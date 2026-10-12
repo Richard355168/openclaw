@@ -206,12 +206,32 @@ export async function processCompletionsStream(
     if (!compat.dropCumulativeTextDeltaReplays || dsmlPlan.length === 0) {
       return;
     }
-    const admitted = classifyFrame(dsmlPlan.reduce((text, step) => text + (step.text ?? ""), ""));
+    // A recovered tool call re-opens the block boundary, so text following it
+    // must be classified against the post-tool block state instead of the
+    // block the frame started in; classify each tool-separated text segment
+    // on its own.
+    const flushSegment = (segment: DsmlChainStep[]) => {
+      if (segment.length === 0) {
+        return;
+      }
+      const visible = segment.reduce((text, step) => text + (step.text ?? ""), "");
+      if (classifyFrame(visible)) {
+        for (const step of segment) {
+          step.emit();
+        }
+      }
+    };
+    let segment: DsmlChainStep[] = [];
     for (const step of dsmlPlan) {
-      if (admitted || step.text === undefined) {
+      if (step.text === undefined) {
+        flushSegment(segment);
+        segment = [];
         step.emit();
+      } else {
+        segment.push(step);
       }
     }
+    flushSegment(segment);
     dsmlPlan = [];
   };
   const appendToolCallBlock = (block: ToolCallBlock) => {
@@ -532,8 +552,11 @@ export async function processCompletionsStream(
           }
         } else {
           const hasLaterVisibleText = contentDeltaIndex < lastVisibleTextIndex;
+          // Recovery stays off at this boundary: native reasoning is only
+          // established by beginReasoning below, so recovering an unfinished
+          // tag here would leak its hidden content as visible text.
           if (!hasLaterVisibleText || !reasoningTagTextPartitioner.hasPendingSyntax()) {
-            flushReasoningTagTextPartitioner();
+            flushReasoningTagTextPartitioner(false);
           }
           settleDsmlPlan();
           beginReasoning(hasLaterVisibleText);

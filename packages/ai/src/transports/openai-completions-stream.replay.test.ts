@@ -452,6 +452,28 @@ describe("managed cumulative text delta replays with DSML recovery", () => {
     expect(text).toBe("Knock knock. Knock knock. tail");
   });
 
+  it("keeps text following a recovered DSML tool call while enabled", async () => {
+    // The recovered tool re-opens the block boundary; the frame's trailing
+    // text must be classified against the post-tool state, not suppressed as
+    // a replay of the pre-tool block.
+    const text = await runStream(createOpenAICompletionsTransportStreamFn(), {
+      chunks: [
+        makeCompletionsChunk({ role: "assistant", content: "Knock knock. " }),
+        makeCompletionsChunk({
+          content:
+            '<|DSML|tool_calls><|DSML|invoke name="read">{"path":"/tmp/a"}</|DSML|invoke></|DSML|tool_calls>Knock knock. ',
+        }),
+        makeCompletionsChunk({}, "stop"),
+      ],
+      compat: {
+        dropCumulativeTextDeltaReplays: true,
+        thinkingFormat: "deepseek",
+      },
+      expectedText: "Knock knock. Knock knock. ",
+    });
+    expect(text).toBe("Knock knock. Knock knock. ");
+  });
+
   it("keeps a prefix released while DSML recovery holds a possible token", async () => {
     // A frame ending in a partial DSML tool token makes the recovery stage
     // hold the suffix and release only the prefix; that piece can restate the

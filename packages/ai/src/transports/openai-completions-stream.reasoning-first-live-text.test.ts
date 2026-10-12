@@ -81,6 +81,28 @@ describe("reasoning-first completions", () => {
     expect(output.stopReason).toBe("stop");
   });
 
+  it("keeps unfinished tag content private across a structured reasoning transition", async () => {
+    const model = makeCompletionsModel();
+    const output = createAssistantOutput(model);
+    const text: string[] = [];
+    async function* chunks() {
+      yield makeCompletionsChunk({ content: "<think>unfinished reasoning" });
+      yield makeCompletionsChunk({
+        content: [{ type: "thinking", thinking: "Recheck." }],
+      });
+      yield makeCompletionsChunk({}, "stop");
+    }
+    await processCompletionsStream(chunks(), output, model, {
+      push(event) {
+        if (event.type === "text_delta") {
+          text.push(event.delta);
+        }
+      },
+    });
+    expect(output.stopReason).toBe("stop");
+    expect(text.join("")).toBe("");
+  });
+
   it.each(["", "Answer. "])("keeps unfinished reasoning private after %j", async (prefix) => {
     const model = makeCompletionsModel();
     const output = createAssistantOutput(model);
