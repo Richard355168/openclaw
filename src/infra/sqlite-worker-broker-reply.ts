@@ -15,6 +15,7 @@ import {
   assertStateDatabaseReadAllowed,
   type StateDatabaseSchemaLease,
 } from "./gateway-state-owner.js";
+import { runWithMainThreadTask } from "./main-thread-stall.js";
 import { installSqliteNativeRuntimeAdmission } from "./node-sqlite.js";
 import {
   captureSqliteDatabaseAdmissions,
@@ -169,6 +170,12 @@ function prepareSqliteWorkerOperationAdmission(
       }
       retained.admission.bindDatabaseAuthority({
         databasePath,
+        ...(job.request.type === "open" &&
+        !job.request.existingIdentity &&
+        resolveIdentityPathViaExistingAncestorSync(job.request.databasePath) ===
+          resolveIdentityPathViaExistingAncestorSync(databasePath)
+          ? { coldOpenPath: databasePath }
+          : {}),
         assertRequest: assertDispatchable,
         assertAccess,
         ...(job.request.type === "close" ? {} : { assertCreate }),
@@ -423,7 +430,9 @@ export function receiveSqliteWorkerReply(
   }
   let value: unknown;
   try {
-    const result = decodeSqliteWorkerReplyValue(job, reply);
+    const result = runWithMainThreadTask("worker:sqlite:reply-decode", () =>
+      decodeSqliteWorkerReplyValue(job, reply),
+    );
     if (result.type === "continue") {
       // Continuations retain the current job and its reserved transport credits through drain.
       slot.worker.postMessage(result.request, []);
@@ -615,6 +624,10 @@ export function settleSqliteWorkerJob(
   let failure = error ?? (admission?.failureSource === "domain" ? undefined : admission?.failure);
   const admissionCleanupFailures = job.operationAdmission?.admission.cleanupFailures ?? [];
   if (admissionCleanupFailures.length > 0) {
+    // Cleanup uncertainty supersedes the worker's pre-open refusal certificate.
+    if (job.dispatchState) {
+      job.dispatchState.openRefused = false;
+    }
     const cleanupError = new AggregateError(
       admissionCleanupFailures,
       "SQLite worker admission cleanup failed",
