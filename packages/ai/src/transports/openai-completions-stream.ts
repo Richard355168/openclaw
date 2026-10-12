@@ -542,8 +542,27 @@ export async function processCompletionsStream(
         beginReasoning(hasSameChunkVisibleText);
         appendReasoningDeltas(reasoningDeltas);
       }
+      // Classify the chunk's whole visible contribution at ingestion, before
+      // parser buffering can absorb it: a replay held by the Markdown
+      // partitioner would otherwise lose its frame identity and survive the
+      // terminal flush merged with following text. Parts of one frame must
+      // be classified together (an early part may restate while the frame
+      // total adds new text), and the comparison runs against the raw
+      // ingested ledger because acceptedText lags whenever the parser holds
+      // a suffix. A dropped restatement is a byte copy of already-fed text,
+      // so skipping tag routing leaks nothing.
+      const visibleFrameText = contentDeltas
+        .filter((delta) => delta.kind === "text")
+        .map((delta) => delta.text)
+        .join("");
+      const suppressVisibleFrame =
+        visibleFrameText.length > 0 &&
+        !replayGuard.classifyIngestedFrame(visibleFrameText, opensTextBlock());
       for (const [contentDeltaIndex, contentDelta] of contentDeltas.entries()) {
         if (contentDelta.kind === "text") {
+          if (suppressVisibleFrame) {
+            continue;
+          }
           const parts = gemmaToolCallRecoverer?.push(contentDelta.text) ?? [contentDelta];
           for (const part of parts) {
             for (const routedDelta of reasoningTagTextPartitioner.pushVisible(part.text)) {

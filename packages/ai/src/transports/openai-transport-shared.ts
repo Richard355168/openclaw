@@ -345,6 +345,9 @@ export function createCumulativeReplayGuard(enabled: boolean) {
       classifyFrame(_visible: string, _opensTextBlock: boolean, _frameComplete: boolean): boolean {
         return true;
       },
+      classifyIngestedFrame(_visible: string, _opensTextBlock: boolean): boolean {
+        return true;
+      },
       admitTextDelta(_text: string, _opensTextBlock: boolean, _compare: boolean): boolean {
         return true;
       },
@@ -354,10 +357,18 @@ export function createCumulativeReplayGuard(enabled: boolean) {
   let acceptedText = "";
   let textBlockStartLength = 0;
   let textBlockStartPending = false;
+  // Raw text fed into the parser, tracked separately from acceptedText:
+  // the parser can hold a suffix of an ingested frame (Markdown parse
+  // allowance), so acceptedText lags the raw stream and an ingested replay
+  // frame would not equal it. Ingestion-time classification must compare
+  // against everything fed so far instead.
+  let ingestedText = "";
+  let ingestedBlockStartLength = 0;
   const trackBlockBoundary = (opensTextBlock: boolean) => {
     if (opensTextBlock) {
       if (!textBlockStartPending) {
         textBlockStartLength = acceptedText.length;
+        ingestedBlockStartLength = ingestedText.length;
         textBlockStartPending = true;
       }
     } else {
@@ -389,6 +400,31 @@ export function createCumulativeReplayGuard(enabled: boolean) {
         });
         return false;
       }
+      return true;
+    },
+    /**
+     * Classifies one provider frame's raw visible contribution at ingestion,
+     * before any parser buffering can absorb it, and records it in the raw
+     * ledger. Returns false when the frame restates every raw byte fed so
+     * far; the caller must then drop the frame before feeding the parser.
+     * The raw ledger intentionally tracks pre-filtering text: a frame equal
+     * to the raw stream is a replay regardless of what the parsers have
+     * released yet.
+     */
+    classifyIngestedFrame(visible: string, opensTextBlock: boolean): boolean {
+      trackBlockBoundary(opensTextBlock);
+      if (
+        visible.length >= CUMULATIVE_TEXT_DELTA_REPLAY_MIN_CHARS &&
+        visible === ingestedText &&
+        ingestedText.length > ingestedBlockStartLength
+      ) {
+        log.debug("Dropped a cumulative replay held by parser buffering", {
+          deltaLength: visible.length,
+          ingestedLength: ingestedText.length,
+        });
+        return false;
+      }
+      ingestedText += visible;
       return true;
     },
     /**

@@ -423,6 +423,38 @@ describe.each([
     });
     expect(text).toBe(`${TEXT_A}${TEXT_A}tail`);
   });
+  it("drops a replay frame held by Markdown buffering when enabled", async () => {
+    // The parser holds a replay chunk whose Markdown allowance is exhausted;
+    // frame identity must survive so the held replay cannot merge with
+    // following text at the terminal flush (the 97-vs-51-character case).
+    const text = await runStream(createStream, {
+      chunks: [
+        makeCompletionsChunk({ role: "assistant", content: "Run `pnpm test` first. " }),
+        makeCompletionsChunk({ content: "Then check the output. " }),
+        makeCompletionsChunk({ content: "Run `pnpm test` first. Then check the output. " }),
+        makeCompletionsChunk({ content: "Tail." }),
+        makeCompletionsChunk({}, "stop"),
+      ],
+      compat: { dropCumulativeTextDeltaReplays: true },
+      expectedText: "Run `pnpm test` first. Then check the output. Tail.",
+    });
+    expect(text).toBe("Run `pnpm test` first. Then check the output. Tail.");
+  });
+
+  it("drops a replay after a fenced code frame when enabled", async () => {
+    const text = await runStream(createStream, {
+      chunks: [
+        makeCompletionsChunk({ role: "assistant", content: "Look:\n```js\nfoo();\n```\n" }),
+        makeCompletionsChunk({ content: "Look:\n```js\nfoo();\n```\n" }),
+        makeCompletionsChunk({ content: "Tail." }),
+        makeCompletionsChunk({}, "stop"),
+      ],
+      compat: { dropCumulativeTextDeltaReplays: true },
+      expectedText: "Look:\n```js\nfoo();\n```\nTail.",
+    });
+    expect(text).toBe("Look:\n```js\nfoo();\n```\nTail.");
+  });
+
 });
 
 describe("managed cumulative text delta replays with DSML recovery", () => {
