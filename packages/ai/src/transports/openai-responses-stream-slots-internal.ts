@@ -51,6 +51,30 @@ type ResponsesOutputState = {
 
 export type ResponsesOutputTracker = ReturnType<typeof createResponsesOutputTracker>;
 
+// Boundary events carry `partial` so consumers can replace their state
+// wholesale; `text_delta` events omit it (per-token snapshots would be
+// retained) and rely on append semantics instead. The partial must therefore
+// be detached from the transport's live AssistantMessage: the stream mutates
+// blocks in place (e.g. projectTextDelta appends before pushing), so an
+// aliased snapshot lets a consumer double-apply the very delta event that
+// follows — the text doubles until the next partial heals it. Boundary
+// events are not per-token, so copying here is bounded.
+function detachPartialSnapshot<TEvent extends { partial?: AssistantMessage }>(
+  event: TEvent,
+): TEvent {
+  if (!event.partial) {
+    return event;
+  }
+  const partial = event.partial;
+  return {
+    ...event,
+    partial: {
+      ...partial,
+      content: partial.content.map((block) => ({ ...block })),
+    },
+  };
+}
+
 export function createResponsesOutputTracker(params: {
   output: Pick<AssistantMessage, "content">;
   canRetryIdentityConflict?: () => boolean;
@@ -111,7 +135,7 @@ export function createResponsesOutputTracker(params: {
           visibleTextEmitted ||=
             (event.type === "text_delta" && event.delta.length > 0) ||
             (event.type === "text_end" && event.content.length > 0);
-          sink.push(event);
+          sink.push(detachPartialSnapshot(event));
         },
       };
     },
