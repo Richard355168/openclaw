@@ -99,14 +99,15 @@ type TextOrDelta = AssistantMessageEvent & {
  * (agent-stream-response.ts resolveAssistantMessageUpdate): boundary events
  * with a partial replace the consumer state wholesale; text deltas append at
  * their content index. Deliberately guard-free — a correct stream never needs
- * the downstream replay guard.
+ * the downstream replay guard. Returns the text observed before every append
+ * so the caller can checkpoint intermediate states, not just the healed end.
  */
 function consumeLikeAgentCore(events: readonly AssistantMessageEvent[]): {
   text: string;
-  aliasedAny: boolean;
+  prevBeforeAppend: string[];
 } {
   let state: AssistantMessage | null = null;
-  let aliasedAny = false;
+  const prevBeforeAppend: string[] = [];
   for (const event of events) {
     const typed = event as TextOrDelta;
     if (typed.partial) {
@@ -118,6 +119,7 @@ function consumeLikeAgentCore(events: readonly AssistantMessageEvent[]): {
       const idx = typed.contentIndex ?? 0;
       const current = content[idx] as { type: string; text: string } | undefined;
       const prev = current?.type === "text" ? current.text : "";
+      prevBeforeAppend.push(prev);
       content[idx] =
         current?.type === "text"
           ? { ...current, text: prev + (typed.delta ?? "") }
@@ -129,7 +131,7 @@ function consumeLikeAgentCore(events: readonly AssistantMessageEvent[]): {
     .filter((block): block is Extract<typeof block, { type: "text" }> => block.type === "text")
     .map((block) => block.text)
     .join("");
-  return { text, aliasedAny };
+  return { text, prevBeforeAppend };
 }
 
 describe("Responses stream partial snapshots", () => {
@@ -155,27 +157,47 @@ describe("Responses stream partial snapshots", () => {
     for (const firstDelta of [WIRE_TEXT.slice(0, 9), WIRE_TEXT.slice(0, 2)]) {
       const { emitted, output } = await run(firstDelta);
       const consumer = consumeLikeAgentCore(emitted);
-      const wireText = WIRE_TEXT;
-      // The consumer's replace/append reconstruction must equal the wire text
-      // byte for byte — no doubled first delta, regardless of first-delta size
-      // (the ≥8-char variant is what tripped production guards; the short
-      // variant doubled silently before the fix).
-      expect(consumer.text).toBe(wireText);
+      // Intermediate checkpoints: before each append, the consumer state must
+      // equal exactly the wire text emitted so far — a delta that already sat
+      // in an aliased block would surface here as a doubled prefix, not only
+      // in the healed final text.
+      const deltas = emitted
+        .filter((event): event is typeof event & { delta: string } => event.type === "text_delta")
+        .map((event) => event.delta);
+      expect(consumer.prevBeforeAppend).toHaveLength(deltas.length);
+      let accumulated = "";
+      for (const [index, prev] of consumer.prevBeforeAppend.entries()) {
+        expect(prev).toBe(accumulated);
+        accumulated += deltas[index];
+      }
+      expect(accumulated).toBe(WIRE_TEXT);
+      expect(consumer.text).toBe(WIRE_TEXT);
       const transportText = output.content
         .filter((block): block is Extract<typeof block, { type: "text" }> => block.type === "text")
         .map((block) => block.text)
         .join("");
-      expect(transportText).toBe(wireText);
-      // Boundary snapshots must never alias the transport's live blocks.
+      expect(transportText).toBe(WIRE_TEXT);
+      // Snapshot contract: text blocks are detached (never the transport's
+      // live objects); thinking blocks stay referenced so their mutation
+      // owner's WeakMap append facts (#123120) keep working.
       const liveBlocks = new Set(output.content);
+      let sawText = false;
+      let sawThinking = false;
       for (const event of emitted) {
         const partial = (event as TextOrDelta).partial;
         if (!partial) continue;
         for (const block of partial.content) {
-          expect(liveBlocks.has(block)).toBe(false);
+          if (block.type === "text") {
+            expect(liveBlocks.has(block)).toBe(false);
+            sawText = true;
+          } else if (block.type === "thinking") {
+            expect(liveBlocks.has(block)).toBe(true);
+            sawThinking = true;
+          }
         }
       }
-      expect(consumer.aliasedAny).toBe(false);
+      expect(sawText).toBe(true);
+      expect(sawThinking).toBe(true);
     }
   });
 });

@@ -326,7 +326,15 @@ export function detachPartialSnapshot<TEvent>(event: TEvent): TEvent {
     ...event,
     partial: {
       ...partial,
-      content: partial.content.map((block) => ({ ...block })),
+      // Copy text blocks only. The double-apply hazard is text_delta-specific
+      // (agent-core appends only text_delta; every other delta kind carries
+      // its own partial and is replaced wholesale). The other block kinds are
+      // identity-owned by their consumers and must stay referenced:
+      // thinking blocks record append facts in a WeakMap keyed by the
+      // original object (#123120 — copying would force quadratic prefix
+      // rescans), and tool blocks are normalized in place by consumers
+      // against the transport-owned output (#170751).
+      content: partial.content.map((block) => (block.type === "text" ? { ...block } : block)),
     },
   } as TEvent;
 }

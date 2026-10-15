@@ -34,10 +34,10 @@ type TextOrDelta = AssistantMessageEvent & {
 
 function consumeLikeAgentCore(events: readonly AssistantMessageEvent[]): {
   text: string;
-  aliasedAny: boolean;
+  prevBeforeAppend: string[];
 } {
   let state: AssistantMessage | null = null;
-  let aliasedAny = false;
+  const prevBeforeAppend: string[] = [];
   for (const event of events) {
     const typed = event as TextOrDelta;
     if (typed.partial) {
@@ -49,6 +49,7 @@ function consumeLikeAgentCore(events: readonly AssistantMessageEvent[]): {
       const idx = typed.contentIndex ?? 0;
       const current = content[idx] as { type: string; text: string } | undefined;
       const prev = current?.type === "text" ? current.text : "";
+      prevBeforeAppend.push(prev);
       content[idx] =
         current?.type === "text"
           ? { ...current, text: prev + (typed.delta ?? "") }
@@ -60,7 +61,7 @@ function consumeLikeAgentCore(events: readonly AssistantMessageEvent[]): {
     .filter((block): block is Extract<typeof block, { type: "text" }> => block.type === "text")
     .map((block) => block.text)
     .join("");
-  return { text, aliasedAny };
+  return { text, prevBeforeAppend };
 }
 
 describe("openai completions stream partial snapshots", () => {
@@ -78,16 +79,34 @@ describe("openai completions stream partial snapshots", () => {
     );
 
     const consumer = consumeLikeAgentCore(events);
+    // Intermediate checkpoints: before each append, the consumer state must
+    // equal exactly the wire text emitted so far — a delta already sitting in
+    // an aliased block surfaces here as a doubled prefix.
+    const deltas = events
+      .filter((event): event is typeof event & { delta: string } => event.type === "text_delta")
+      .map((event) => event.delta);
+    expect(consumer.prevBeforeAppend).toHaveLength(deltas.length);
+    let accumulated = "";
+    for (const [index, prev] of consumer.prevBeforeAppend.entries()) {
+      expect(prev).toBe(accumulated);
+      accumulated += deltas[index];
+    }
+    expect(accumulated).toBe(WIRE_TEXT);
     expect(consumer.text).toBe(WIRE_TEXT);
-    // Boundary snapshots must never alias the transport's live blocks.
+    // Snapshot contract: text blocks are detached (never the transport's
+    // live objects).
     const liveBlocks = new Set(output.content);
+    let sawText = false;
     for (const event of events) {
       const partial = (event as TextOrDelta).partial;
       if (!partial) continue;
       for (const block of partial.content) {
-        expect(liveBlocks.has(block)).toBe(false);
+        if (block.type === "text") {
+          expect(liveBlocks.has(block)).toBe(false);
+          sawText = true;
+        }
       }
     }
-    expect(consumer.aliasedAny).toBe(false);
+    expect(sawText).toBe(true);
   });
 });
