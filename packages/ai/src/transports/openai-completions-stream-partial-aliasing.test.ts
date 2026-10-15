@@ -99,7 +99,9 @@ describe("openai completions stream partial snapshots", () => {
     let sawText = false;
     for (const event of events) {
       const partial = (event as TextOrDelta).partial;
-      if (!partial) continue;
+      if (!partial) {
+        continue;
+      }
       for (const block of partial.content) {
         if (block.type === "text") {
           expect(liveBlocks.has(block)).toBe(false);

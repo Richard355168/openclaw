@@ -336,10 +336,11 @@ export function detachPartialSnapshot<TEvent>(event: TEvent): TEvent {
       // original object (#123120 — copying would force quadratic prefix
       // rescans), and tool blocks are normalized in place by consumers
       // against the transport-owned output (#170751).
-      content: partial.content.map((block) => (block.type === "text" ? { ...block } : block)),
+      content: partial.content.map((block) =>
+        block.type === "text" ? Object.assign({}, block) : block,
+      ),
     },
-    // SAFETY: TEvent is preserved by the spread; only `partial` is rebuilt.
-  } as TEvent;
+  } as TEvent; // SAFETY: TEvent survives the spread; only `partial` is rebuilt.
 }
 
 export function parseOpenAICompletionsUsage(
