@@ -85,7 +85,9 @@ function reasoningThenMessageEvents(firstDelta: string, secondDelta: string): un
 }
 
 async function* sourceOf(events: readonly unknown[]) {
-  for (const event of events) yield event;
+  for (const event of events) {
+    yield event;
+  }
 }
 
 type TextOrDelta = AssistantMessageEvent & {
@@ -141,7 +143,9 @@ describe("Responses stream partial snapshots", () => {
       const stream = new AssistantMessageEventStream();
       const emitted: AssistantMessageEvent[] = [];
       const collect = (async () => {
-        for await (const event of stream) emitted.push(event);
+        for await (const event of stream) {
+          emitted.push(event);
+        }
       })();
       await processResponsesStream(
         sourceOf(reasoningThenMessageEvents(firstDelta, WIRE_TEXT.slice(firstDelta.length))),
@@ -185,7 +189,9 @@ describe("Responses stream partial snapshots", () => {
       let sawThinking = false;
       for (const event of emitted) {
         const partial = (event as TextOrDelta).partial;
-        if (!partial) continue;
+        if (!partial) {
+          continue;
+        }
         for (const block of partial.content) {
           if (block.type === "text") {
             expect(liveBlocks.has(block)).toBe(false);
