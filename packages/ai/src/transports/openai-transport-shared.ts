@@ -317,8 +317,7 @@ export type MutableAssistantOutput = Omit<AssistantMessage, "content" | "usage">
 // The event unions are heterogeneous (not every member carries `partial`),
 // so presence is checked at runtime instead of via a constrained signature.
 export function detachPartialSnapshot<TEvent>(event: TEvent): TEvent {
-  // SAFETY: the event unions are heterogeneous (not every member carries
-  // `partial`); runtime presence check below establishes the shape.
+  // SAFETY: event unions are heterogeneous; runtime presence check verifies `partial`.
   const source = event as { partial?: AssistantMessage };
   if (!source.partial) {
     return event;
