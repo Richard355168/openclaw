@@ -4,7 +4,8 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { streamOpenAIResponses } from "../../ai/src/providers/openai-responses.js";
 import { runAgentLoop } from "./agent-loop.js";
-import type { AgentEvent, Message, Model } from "./types.js";
+import type { Message, Model } from "./llm.js";
+import type { AgentEvent } from "./types.js";
 
 // End-to-end regression for the partial-snapshot aliasing defect, through the
 // real consumer: runAgentLoop drives the real openai-responses transport over
@@ -84,7 +85,9 @@ async function startResponsesServer(): Promise<{ server: Server; port: number }>
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.end(sse(providerEvents()));
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
   const port = (server.address() as AddressInfo).port;
   return { server, port };
 }
@@ -92,9 +95,14 @@ async function startResponsesServer(): Promise<{ server: Server; port: number }>
 function messageUpdateTexts(events: readonly AgentEvent[]): string[] {
   const texts: string[] = [];
   for (const event of events) {
-    if (event.type !== "message_update") continue;
-    for (const block of event.message.content) {
-      if (block.type === "text" && block.text.length > 0) texts.push(block.text);
+    if (event.type !== "message_update" || !("content" in event.message)) {
+      continue;
+    }
+    const blocks = typeof event.message.content === "string" ? [] : event.message.content;
+    for (const block of blocks) {
+      if (block.type === "text" && block.text.length > 0) {
+        texts.push(block.text);
+      }
     }
   }
   return texts;
@@ -128,8 +136,8 @@ describe("agent loop over openai-responses partial snapshots", () => {
           events.push(event);
         },
         undefined,
-        (loopModel, context, options) =>
-          streamOpenAIResponses(loopModel, context, { ...options, apiKey: "test-key" }),
+        (_loopModel, context, options) =>
+          streamOpenAIResponses(model, context, { ...options, apiKey: "test-key" }),
       );
 
       // Every live update must be a strict prefix of the wire text — a
@@ -141,8 +149,11 @@ describe("agent loop over openai-responses partial snapshots", () => {
       }
       // Monotonic growth: each update extends the previous one.
       for (const [index, text] of updates.entries()) {
-        if (index === 0) continue;
-        expect(text.startsWith(updates[index - 1])).toBe(true);
+        if (index === 0) {
+          continue;
+        }
+        const previous = updates[index - 1] ?? "";
+        expect(text.startsWith(previous)).toBe(true);
       }
       // The final live update must carry the complete wire text exactly once.
       expect(updates.at(-1)).toBe(WIRE_TEXT);

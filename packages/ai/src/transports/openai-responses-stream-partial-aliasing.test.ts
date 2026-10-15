@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createResponsesAssistantOutput } from "../providers/openai-responses-shared.js";
-import type { AssistantMessage, AssistantMessageEvent, Model } from "../types.js";
+import type { AssistantMessage, AssistantMessageEvent, Model, TextContent } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { processResponsesStream } from "./openai-responses-stream-internal.js";
 
@@ -117,7 +117,7 @@ function consumeLikeAgentCore(events: readonly AssistantMessageEvent[]): {
     if (event.type === "text_delta") {
       const content = [...(state?.content ?? [])];
       const idx = typed.contentIndex ?? 0;
-      const current = content[idx] as { type: string; text: string } | undefined;
+      const current = content[idx] as TextContent | undefined;
       const prev = current?.type === "text" ? current.text : "";
       prevBeforeAppend.push(prev);
       content[idx] =
