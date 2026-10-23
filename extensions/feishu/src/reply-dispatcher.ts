@@ -396,7 +396,17 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         // another cycle, so a registration made afterwards could never
         // settle and the progress callback would hang.
         observed = session.registerContentObserver(combined);
-        await session.update(combined);
+        // 2026.10.6 semantics: admit the text without awaiting the transport.
+        // Awaiting here would serialize obsolete snapshots behind the in-flight
+        // write and delay the close seal past pending previews, so closed-slot
+        // coalescing could not drop them (streaming-backlog regression).
+        void session
+          .update(combined)
+          .catch((error: unknown) =>
+            params.runtime.error?.(
+              `feishu[${account.accountId}] streaming update failed: ${String(error)}`,
+            ),
+          );
       }
     });
     // The chain must tolerate a failed task; callers get false, not a rejection.
@@ -765,6 +775,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     // Narration preambles flow through the shared commentary lane; the 💬 lane
     // marker is this channel's presentation choice for it.
     commentaryLinePrefix: "💬 ",
+    // 2026.10.6 moved tool glyphs behind this compositor flag (the pre-10.6
+    // formatter inlined them); opt in so rolling tool lines carry 🛠️/📖/… icons.
+    toolIcons: true,
     update: async (draftText, options) => {
       statusLine = draftText;
       progressDraftLabel = options.snapshot.label;
