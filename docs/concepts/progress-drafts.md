@@ -34,7 +34,9 @@ through the `toolIcons` option of `createChannelProgressDraftCompositor`.
 <Note>
   Discord and Telegram default to `progress` without additional config. Set
   `mode: "partial"` on either to stream answer text instead, or `mode: "off"`
-  to disable previews. Existing explicit modes are preserved. See
+  to disable previews. Existing explicit modes are preserved. Feishu renders
+  the progress draft on its streaming card (tool lines also appear under
+  `mode: "partial"`). See
   [Streaming and chunking](/concepts/streaming#channel-mapping) for the full
   per-channel default table.
 </Note>
