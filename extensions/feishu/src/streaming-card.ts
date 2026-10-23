@@ -451,10 +451,16 @@ export class FeishuStreamingSession {
     // Only send final update if content differs from what's already displayed.
     // An explicit empty final text clears a transient preview before closeout.
     if ((text || finalText !== undefined) && text !== this.state.sentText) {
-      const replace = !text.startsWith(this.state.sentText);
-      const sent = await this.writeCardContent(text, replace, (e) => {
+      // Always use the content-level write form here. The element-level replace
+      // form is ignored by CardKit while streaming_mode is still true (accepted
+      // with code 0, never applied — observed live 2026-10-24: finalized cards
+      // kept the last answer+progress snapshot), and since the progress draft
+      // makes non-continuation finals the COMMON case, that silent no-op froze
+      // every finalized card on its last mid-stream content. The content form is
+      // the streaming-native full-state write and carries no such constraint.
+      const sent = await this.writeCardContent(text, false, (e) => {
         finalWriteError = e;
-        this.log?.(`Final ${replace ? "replace" : "update"} failed: ${String(e)}`);
+        this.log?.(`Final update failed: ${String(e)}`);
       });
       this.state.currentText = text;
       if (sent) {

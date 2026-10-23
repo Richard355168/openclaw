@@ -734,4 +734,48 @@ describe("feishu delivery trace goldens", () => {
       });
     });
   }
+
+  // Spike regression (ported PR #148176 on 2026.10.6): the final close must
+  // publish the answer through the content-level write form. CardKit ignores
+  // element-level replaces while streaming_mode is still true (accepted with
+  // code 0, never applied — observed live 2026-10-24), which froze finalized
+  // cards on their last answer+progress snapshot. The last content write must
+  // be answer-only, and every write must use the content form.
+  it("finalizes with the answer only through the content-level write form", async () => {
+    const events = await runDeliveryTraceScenario({
+      scenario: {
+        name: "temp-final-content",
+        steps: [
+          { kind: "reply-start" },
+          { kind: "tool-progress", name: "web_search", phase: "start" },
+          { kind: "advance", ms: 300 },
+          { kind: "partial", text: "Let me look that up for you." },
+          { kind: "advance", ms: 300 },
+          { kind: "tool-progress", name: "web_search", phase: "result" },
+          { kind: "partial", text: "Let me look that up for you. Here is what I found." },
+          { kind: "advance", ms: 400 },
+          { kind: "final", text: "Let me look that up for you. Here is what I found: the answer." },
+          { kind: "idle" },
+        ],
+      },
+      setup: (recorder) => setupFeishuTrace(recorder, "temp-final-content"),
+    });
+    const contentWrites = events.filter(
+      (event) =>
+        typeof event.kind === "string" &&
+        event.kind.startsWith("PUT /cardkit/v1/cards/card-1/elements/content"),
+    );
+    expect(contentWrites.length).toBeGreaterThan(0);
+    for (const write of contentWrites) {
+      const payload = (write.data as { payload?: Record<string, unknown> }).payload ?? {};
+      expect(payload).toHaveProperty("content");
+      expect(payload).not.toHaveProperty("element");
+    }
+    const last = contentWrites.at(-1) as {
+      data: { payload: { content: string } };
+    };
+    expect(last.data.payload.content).toBe(
+      "Let me look that up for you. Here is what I found: the answer.",
+    );
+  });
 });
