@@ -2311,6 +2311,41 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     await vi.waitFor(() => expect(session.update.mock.calls.length).toBeGreaterThan(1));
   });
 
+  it("keeps command-bearing tool lines label-only under the default commandText mode", async () => {
+    const { result } = createDispatcherHarness();
+    await result.replyOptions.onToolStart?.({
+      name: "exec",
+      phase: "start",
+      args: { command: "git status" },
+    });
+    const session = requireStreamingInstance(0);
+    await vi.waitFor(() => expect(session.update).toHaveBeenCalled());
+    // Default "status" mode: the rolling line identifies the tool without
+    // echoing command-derived detail.
+    expect(String(session.update.mock.calls.at(-1)?.[0])).not.toContain("git");
+  });
+
+  it("shows command detail on exec lines when streaming.progress.commandText is raw", async () => {
+    resolveFeishuAccountMock.mockReturnValue(
+      createReplyAccount("card", "partial", "feishu", {
+        streaming: { mode: "partial", progress: { commandText: "raw" } },
+      }),
+    );
+    const { result } = createDispatcherHarness();
+    await result.replyOptions.onToolStart?.({
+      name: "exec",
+      phase: "start",
+      args: { command: "git status" },
+    });
+    const session = requireStreamingInstance(0);
+    await vi.waitFor(() => expect(session.update).toHaveBeenCalled());
+    // "raw" unlocks the command-derived meta; the explain detail mode (default)
+    // renders the redacted shell summarizer output for `git status`.
+    await vi.waitFor(() =>
+      expect(String(session.update.mock.calls.at(-1)?.[0])).toContain("check git status"),
+    );
+  });
+
   it("renders plan checklist steps on the streaming card", async () => {
     const { result } = createDispatcherHarness();
     await result.replyOptions.onToolStart?.({ name: "bash", phase: "start" });

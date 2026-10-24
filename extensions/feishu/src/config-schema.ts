@@ -1,6 +1,8 @@
 import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 import {
   ChannelDeliveryStreamingConfigSchema,
+  ChannelStreamingPreviewSchema,
+  ChannelStreamingProgressSchema,
   ContextVisibilityModeSchema,
   DmPolicySchema,
   GroupPolicySchema,
@@ -126,6 +128,14 @@ const FeishuStreamingSchema = z
   .object({
     mode: z.enum(["off", "partial"]).optional(),
     ...ChannelDeliveryStreamingConfigSchema.shape,
+    // Shared progress-draft presentation knobs (same shapes as Telegram/
+    // Discord/Slack): `progress.commandText: "raw"` unlocks command-derived
+    // detail on rolling tool lines (explain summaries by default, redacted),
+    // and the progress/preview sub-objects carry the maxLines/maxLineChars
+    // budgets. The unified streaming `mode` stays out — the Feishu card
+    // transport owns its narrower off/partial enum above.
+    preview: ChannelStreamingPreviewSchema.optional(),
+    progress: ChannelStreamingProgressSchema.optional(),
     // Progress-draft disposition when the final answer closes the streaming
     // card: "overwrite" (default) keeps only the committed answer, matching the
     // other draft channels; "append" retains the rolling progress lines above
