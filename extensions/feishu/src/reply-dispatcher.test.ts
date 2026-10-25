@@ -416,6 +416,51 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     return instance;
   }
 
+  function expectRecordFields(
+    value: unknown,
+    label: string,
+    expected: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const record = requireRecord(value, label);
+    for (const [key, expectedValue] of Object.entries(expected)) {
+      expect(record[key], `${label}.${key}`).toEqual(expectedValue);
+    }
+    return record;
+  }
+
+  function mockArg(
+    mock: ReturnType<typeof vi.fn>,
+    callIndex: number,
+    argIndex: number,
+    label: string,
+  ) {
+    const call = mock.mock.calls[callIndex];
+    if (!call) {
+      throw new Error(`missing ${label} call ${callIndex + 1}`);
+    }
+    return call[argIndex];
+  }
+
+  function expectMockArgFields(
+    mock: ReturnType<typeof vi.fn>,
+    label: string,
+    expected: Record<string, unknown>,
+    callIndex = 0,
+    argIndex = 0,
+  ): Record<string, unknown> {
+    return expectRecordFields(mockArg(mock, callIndex, argIndex, label), label, expected);
+  }
+
+  function expectLastMockArgFields(
+    mock: ReturnType<typeof vi.fn>,
+    label: string,
+    expected: Record<string, unknown>,
+    argIndex = 0,
+  ): Record<string, unknown> {
+    const callIndex = mock.mock.calls.length - 1;
+    return expectMockArgFields(mock, label, expected, callIndex, argIndex);
+  }
+
   function createDispatcherHarness(overrides: Partial<ReplyDispatcherArgs> = {}) {
     const result = createFeishuReplyDispatcher({
       cfg: {} as never,
