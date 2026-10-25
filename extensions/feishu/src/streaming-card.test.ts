@@ -321,7 +321,9 @@ describe("FeishuStreamingSession", () => {
       return jsonResponse(
         params.rejectClose && url.pathname.endsWith("/settings")
           ? { code: 91400, msg: "close rejected" }
-          : params.rejectClear && url.pathname.endsWith("/elements/content")
+          : params.rejectClear &&
+              url.pathname.endsWith("/elements/content/content") &&
+              (JSON.parse(body) as { content?: string }).content === ""
             ? { code: 19002, msg: "clear rejected" }
             : { code: 0, msg: "ok" },
       );
@@ -406,14 +408,10 @@ describe("FeishuStreamingSession", () => {
     expect(remove).not.toHaveBeenCalled();
     expect(requests.map(({ path }) => path)).toEqual([
       "/open-apis/cardkit/v1/cards/card_accepted/elements/content/content",
-      "/open-apis/cardkit/v1/cards/card_accepted/elements/content",
+      "/open-apis/cardkit/v1/cards/card_accepted/elements/content/content",
       "/open-apis/cardkit/v1/cards/card_accepted/settings",
     ]);
-    expect(JSON.parse(String(requests[1]?.body.element))).toEqual({
-      tag: "markdown",
-      content: "",
-      element_id: "content",
-    });
+    expect(requests[1]?.body).toMatchObject({ content: "" });
     expect(session.isActive()).toBe(false);
   });
 
@@ -694,6 +692,169 @@ describe("FeishuStreamingSession", () => {
     ]);
   });
 
+  it("observes a rejected write as unaccepted and keeps the text retryable", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_500);
+    const updateBodies: string[] = [];
+    const deps = createMemoryFetch((url, body) => {
+      if (url.pathname.includes("/auth/")) {
+        return jsonResponse({
+          code: 0,
+          msg: "ok",
+          tenant_access_token: "token",
+          expire: 7200,
+        });
+      }
+      if (url.pathname.includes("/elements/content/content")) {
+        updateBodies.push(body);
+        return jsonResponse(
+          updateBodies.length === 1
+            ? { code: 19_001, msg: "sequence rejected" }
+            : { code: 0, msg: "ok" },
+        );
+      }
+      return jsonResponse({ code: 0, msg: "ok" });
+    });
+    const session = new FeishuStreamingSession(
+      {} as never,
+      { appId: "app_confirmed_reject", appSecret: "secret" },
+      vi.fn(),
+      deps,
+    );
+    setStreamingSessionInternals(session, {
+      state: {
+        cardId: "card_confirmed_reject",
+        messageId: "om_confirmed_reject",
+        sequence: 1,
+        currentText: "seed",
+        sentText: "seed",
+        hasNote: false,
+      },
+      lastUpdateTime: 1_500,
+    });
+
+    // Outside the throttle window so the write is attempted at once.
+    // Production registers the observer before the write: an immediate
+    // rejected attempt settles it inside update() with no later cycle.
+    vi.setSystemTime(2_000);
+    const observed = session.registerContentObserver("draft A");
+    const write = session.update("draft A");
+    await vi.advanceTimersByTimeAsync(0);
+    await write;
+    await expect(observed).resolves.toBe(false);
+    expect(updateBodies).toHaveLength(1);
+
+    // The caller-driven retry of the identical text is what proves the
+    // rejection was not cached as rendered.
+    const retryObserved = session.registerContentObserver("draft A");
+    const retryWrite = session.update("draft A");
+    await vi.advanceTimersByTimeAsync(200);
+    await retryWrite;
+    await expect(retryObserved).resolves.toBe(true);
+    expect(updateBodies.map((body) => JSON.parse(body).content)).toEqual(["draft A", "draft A"]);
+  });
+
+  it("resolves observed acceptance true once the throttled flush lands", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const updateBodies: string[] = [];
+    const deps = mockFetches(updateBodies);
+    const session = new FeishuStreamingSession(
+      {} as never,
+      { appId: "app_confirmed_throttle", appSecret: "secret" },
+      undefined,
+      deps,
+    );
+    setStreamingSessionInternals(session, {
+      state: {
+        cardId: "card_confirmed_throttle",
+        messageId: "om_confirmed_throttle",
+        sequence: 1,
+        currentText: "seed",
+        sentText: "seed",
+        hasNote: false,
+      },
+      lastUpdateTime: 1_000,
+    });
+
+    const observed = session.registerContentObserver("throttled draft");
+    const write = session.update("throttled draft");
+    await vi.advanceTimersByTimeAsync(200);
+    await write;
+    await expect(observed).resolves.toBe(true);
+    expect(updateBodies.map((body) => JSON.parse(body).content)).toEqual(["throttled draft"]);
+  });
+
+  it("resolves a pending acceptance observation as unacknowledged after close", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const updateBodies: string[] = [];
+    const deps = mockFetches(updateBodies);
+    const session = new FeishuStreamingSession(
+      {} as never,
+      { appId: "app_confirmed_close", appSecret: "secret" },
+      undefined,
+      deps,
+    );
+    setStreamingSessionInternals(session, {
+      state: {
+        cardId: "card_confirmed_close",
+        messageId: "om_confirmed_close",
+        sequence: 1,
+        currentText: "seed",
+        sentText: "seed",
+        hasNote: false,
+      },
+      lastUpdateTime: 1_000,
+    });
+
+    const observed = session.registerContentObserver("never lands");
+    const write = session.update("never lands");
+    await session.closeWithResult("final answer");
+    await write;
+    await expect(observed).resolves.toBe(false);
+  });
+
+  it("coalesces a snapshot burst into one write and confirms each observer", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const updateBodies: string[] = [];
+    const deps = mockFetches(updateBodies);
+    const session = new FeishuStreamingSession(
+      {} as never,
+      { appId: "app_observed_burst", appSecret: "secret" },
+      undefined,
+      deps,
+    );
+    setStreamingSessionInternals(session, {
+      state: {
+        cardId: "card_observed_burst",
+        messageId: "om_observed_burst",
+        sequence: 1,
+        currentText: "seed",
+        sentText: "seed",
+        hasNote: false,
+      },
+      lastUpdateTime: 1_000,
+    });
+
+    // Rapid snapshots all land inside one throttle window; only the latest
+    // reaches the card, while every observer still learns its own outcome.
+    const first = session.registerContentObserver("snapshot one");
+    const w1 = session.update("snapshot one");
+    const second = session.registerContentObserver("snapshot two");
+    const w2 = session.update("snapshot two");
+    const third = session.registerContentObserver("snapshot three");
+    const w3 = session.update("snapshot three");
+    await vi.advanceTimersByTimeAsync(200);
+    await Promise.all([w1, w2, w3]);
+    await expect(third).resolves.toBe(true);
+    await expect(second).resolves.toBe(false);
+    await expect(first).resolves.toBe(false);
+    expect(updateBodies).toHaveLength(1);
+    expect(JSON.parse(updateBodies[0] ?? "{}").content).toBe("snapshot three");
+  });
+
   it("pushes natural-boundary updates immediately inside the throttle window", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(2_000);
@@ -738,10 +899,9 @@ describe("FeishuStreamingSession", () => {
 
     await session.closeWithResult();
 
-    expect(updateBodies).toHaveLength(0);
-    expect(replaceBodies).toHaveLength(1);
-    const payload = JSON.parse(replaceBodies[0] ?? "{}") as { element?: string };
-    expect(JSON.parse(payload.element ?? "{}")).toMatchObject({ content: next });
+    expect(updateBodies).toHaveLength(1);
+    expect(replaceBodies).toHaveLength(0);
+    expect(JSON.parse(updateBodies[0] ?? "{}")).toMatchObject({ content: next });
   });
 
   it("retains prior visible content when CardKit rejects a divergent close replacement", async () => {
@@ -769,7 +929,7 @@ describe("FeishuStreamingSession", () => {
           expire: 7200,
         });
       }
-      if (url.pathname.endsWith("/elements/content")) {
+      if (url.pathname.endsWith("/elements/content/content")) {
         replaceBodies.push(body);
         return jsonResponse({ code: 19_002, msg: "replacement rejected" });
       }
@@ -807,7 +967,7 @@ describe("FeishuStreamingSession", () => {
     expect(settings.config?.summary?.content).toBe(previous.replaceAll("\n", " ").trim());
     expect(settings.config?.summary?.content).not.toContain("Thinking two");
     expect(log).toHaveBeenCalledWith(
-      "Final replace failed: Error: Replace card content failed: replacement rejected (code=19002)",
+      "Final update failed: Error: Update card content failed: replacement rejected (code=19002)",
     );
   });
 
@@ -923,7 +1083,7 @@ describe("FeishuStreamingSession", () => {
     });
   });
 
-  it("replaces content when final text removes transient streamed status", async () => {
+  it("rewrites streamed content when the final text drops transient status", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(4_000);
     const updateBodies: string[] = [];
@@ -939,24 +1099,12 @@ describe("FeishuStreamingSession", () => {
 
     await session.closeWithResult("final answer");
 
-    expect(updateBodies).toHaveLength(0);
-    expect(replaceBodies).toHaveLength(1);
-    const replacePayload = JSON.parse(replaceBodies[0] ?? "{}") as {
-      element?: string;
-      sequence?: number;
-      uuid?: string;
-    };
-    expect({
-      ...replacePayload,
-      element: JSON.parse(replacePayload.element ?? "{}"),
-    }).toEqual({
-      element: {
-        tag: "markdown",
-        content: "final answer",
-        element_id: "content",
-      },
+    expect(updateBodies).toHaveLength(1);
+    expect(replaceBodies).toHaveLength(0);
+    expect(JSON.parse(updateBodies[0] ?? "{}")).toEqual({
+      content: "final answer",
       sequence: 2,
-      uuid: "r_card_4_2",
+      uuid: "s_card_4_2",
     });
   });
 
@@ -1005,18 +1153,12 @@ describe("FeishuStreamingSession", () => {
     expect(summary.charCodeAt(summary.length - 4)).not.toBe(0xd83d);
   });
 
-  it("logs a final replacement failure when CardKit returns non-OK", async () => {
+  it("logs a final content-write failure when CardKit returns non-OK", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(4_500);
     const updateBodies: string[] = [];
     const replaceBodies: string[] = [];
-    const deps = mockFetches(
-      updateBodies,
-      new Set<number>(),
-      replaceBodies,
-      new Map<number, number>(),
-      new Map([[0, 500]]),
-    );
+    const deps = mockFetches(updateBodies, new Set<number>(), replaceBodies, new Map([[0, 500]]));
     const log = vi.fn();
 
     const session = createActiveSession(deps, {
@@ -1032,10 +1174,10 @@ describe("FeishuStreamingSession", () => {
       result: { visibleReplySent: true, content: "working\n\nfinal answer" },
     });
 
-    expect(updateBodies).toHaveLength(0);
-    expect(replaceBodies).toHaveLength(1);
+    expect(updateBodies).toHaveLength(1);
+    expect(replaceBodies).toHaveLength(0);
     expect(log).toHaveBeenCalledWith(
-      "Final replace failed: Error: Replace card content failed with HTTP 500",
+      "Final update failed: Error: Update card content failed with HTTP 500",
     );
   });
 
