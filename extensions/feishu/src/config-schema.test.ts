@@ -369,6 +369,31 @@ describe("FeishuConfigSchema optimization flags", () => {
     });
   });
 
+  it("exposes the shared preview/progress knobs that drive progress-line detail", () => {
+    const result = FeishuConfigSchema.parse({
+      streaming: {
+        mode: "partial",
+        progress: { commandText: "raw", maxLineChars: 100 },
+        preview: { commandText: "status", toolProgress: true },
+      },
+      accounts: {
+        main: {
+          streaming: { progress: { commandText: "raw" } },
+        },
+      },
+    });
+
+    expect(result.streaming?.progress?.commandText).toBe("raw");
+    expect(result.streaming?.progress?.maxLineChars).toBe(100);
+    expect(result.streaming?.preview?.commandText).toBe("status");
+    expect(result.accounts?.main?.streaming?.progress?.commandText).toBe("raw");
+
+    // The Feishu card transport keeps its own narrow mode enum; the shared
+    // unified streaming mode (off/partial/block/progress) stays out of this
+    // surface because the dispatcher owns mode resolution for CardKit cards.
+    expect(FeishuConfigSchema.safeParse({ streaming: { mode: "progress" } }).success).toBe(false);
+  });
+
   it.each([
     ["boolean streaming", { streaming: true }],
     ["flat blockStreaming", { blockStreaming: true }],
