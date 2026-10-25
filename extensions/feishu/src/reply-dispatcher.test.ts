@@ -408,6 +408,14 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     return { log: vi.fn(), error: vi.fn() } as never;
   }
 
+  function requireStreamingInstance(instanceIndex: number): StreamingSessionStub {
+    const instance = streamingInstances[instanceIndex];
+    if (!instance) {
+      throw new Error(`Expected streaming instance ${instanceIndex}`);
+    }
+    return instance;
+  }
+
   function createDispatcherHarness(overrides: Partial<ReplyDispatcherArgs> = {}) {
     const result = createFeishuReplyDispatcher({
       cfg: {} as never,
@@ -2573,14 +2581,6 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       await result.replyOptions.onToolStart?.({ name: "bash", phase: "start" });
       await vi.waitFor(() => expect(session.update.mock.calls.length).toBeGreaterThan(1));
     });
-
-    function requireStreamingInstance(instanceIndex: number): StreamingSessionStub {
-      const instance = streamingInstances[instanceIndex];
-      if (!instance) {
-        throw new Error(`Expected streaming instance ${instanceIndex}`);
-      }
-      return instance;
-    }
 
     it("keeps command-bearing tool lines label-only under the default commandText mode", async () => {
       const { result } = createDispatcherHarness();
