@@ -12,6 +12,7 @@ import {
   type AgentPlanStep,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { toStringifiedError as toFeishuError } from "openclaw/plugin-sdk/error-runtime";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { getGlobalHookRunner } from "openclaw/plugin-sdk/plugin-runtime";
 import {
   getReplyPayloadTtsSupplement,
@@ -381,15 +382,46 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     return parts.join("");
   };
 
-  const flushStreamingCardUpdate = (combined: string) => {
-    partialUpdateQueue = queueFeishuStreamingUpdate({
-      queue: partialUpdateQueue,
-      session: streaming,
-      startPromise: streamingStartPromise,
-      text: combined,
-      accountId: account.accountId,
-      runtime: params.runtime,
+  const flushStreamingCardUpdate = (combined: string): Promise<boolean> => {
+    const session = streaming;
+    const startPromise = streamingStartPromise;
+    let observed: Promise<boolean> | undefined;
+    // The serialization chain carries only the write itself: update() parks
+    // the snapshot in the session's pendingText and returns, so rapid
+    // snapshots coalesce to the latest one instead of each waiting out a
+    // full throttle window (or a confirmed write) inside the chain.
+    const chained = partialUpdateQueue.then(async () => {
+      if (startPromise) {
+        await startPromise;
+      }
+      // Updates queued before close owns the captured session; updates queued
+      // after the close has settled have no owner.
+      if (session?.isActive() && combined) {
+        // Observation registers BEFORE the write: an immediate rejected
+        // attempt settles its observers inside update() without scheduling
+        // another cycle, so a registration made afterwards could never
+        // settle and the progress callback would hang.
+        observed = session.registerContentObserver(combined);
+        // Fire-and-forget admit (upstream-adopted semantics): awaiting here
+        // would serialize obsolete snapshots behind the in-flight write.
+        void session
+          .update(combined)
+          .catch((error: unknown) =>
+            params.runtime.error?.(
+              `feishu[${account.accountId}] streaming update failed: ${String(error)}`,
+            ),
+          );
+      }
     });
+    // The chain must tolerate a failed task; callers get false, not a rejection.
+    partialUpdateQueue = chained.then(
+      () => undefined,
+      () => undefined,
+    );
+    // Acceptance resolves off the coalescing chain: a rejected write reports
+    // false so the compositor keeps the publication unacknowledged, without
+    // delaying the next snapshot behind that observation.
+    return chained.then(() => observed ?? false);
   };
 
   const queueStreamingUpdate = (
@@ -523,6 +555,11 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       disposition,
       content: finalizedAnswerText,
     };
+    // Upstream 10.10 moves resetStreamingState() to the head of the close path,
+    // but the retained progress lines for finalize:append must be read from the
+    // pre-reset status slot; capture before the reset.
+    const statusLineAtClose = statusLine;
+    const progressDraftLabelAtClose = progressDraftLabel;
     resetStreamingState();
     try {
       if (startPromiseToClose) {
@@ -541,7 +578,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         // Overwrite drops the lines entirely, matching the other draft channels.
         const retainedProgress =
           keepProgressAtFinal && finalizedAnswerText
-            ? stripFeishuProgressLabel(statusLine, progressDraftLabel)
+            ? stripFeishuProgressLabel(statusLineAtClose, progressDraftLabelAtClose)
             : "";
         statusLine = "";
         const text = retainedProgress
@@ -637,12 +674,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     result: FeishuReplyDeliveryResult,
     infoKind?: string,
   ): FeishuReplyDeliveryResultWithFinalization => {
-    let resolveFinalization!: (result: FeishuReplyDeliveryResult) => void;
-    let rejectFinalization!: (error: unknown) => void;
-    const finalization = new Promise<FeishuReplyDeliveryResult>((resolve, reject) => {
-      resolveFinalization = resolve;
-      rejectFinalization = reject;
-    });
+    const { promise: finalization, resolve, reject } = createDeferred<FeishuReplyDeliveryResult>();
     pendingStreamingDeliveries.push({
       result,
       ...(infoKind ? { infoKind } : {}),
@@ -1556,8 +1588,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         : undefined,
       onReasoningEnd: reasoningPreviewEnabled ? () => false : undefined,
       onToolStart: previewStreamingEnabled
-        ? (payload: Parameters<NonNullable<GetReplyOptions["onToolStart"]>>[0]) =>
-            progressCompositor.pushToolEvent(payload)
+        ? (payload: Parameters<NonNullable<GetReplyOptions["onToolStart"]>>[0]) => {
+            return progressCompositor.pushToolEvent(payload);
+          }
         : undefined,
       onItemEvent: previewStreamingEnabled
         ? (payload: Parameters<NonNullable<GetReplyOptions["onItemEvent"]>>[0]) => {
