@@ -119,16 +119,18 @@ export class FeishuCardKitError extends Error {
 }
 
 /**
- * Feishu closes a card's streaming mode automatically 10 minutes after creation,
- * regardless of update activity (CardKit streaming updates overview); content
- * writes against the closed card are rejected with code 300309.
+ * Feishu closes a card's streaming mode 10 minutes after its last activation
+ * regardless of update activity (CardKit streaming updates overview). Content
+ * writes against the closed card are rejected with code 300309; the timeout
+ * path reports the same condition as 200850. Both codes prescribe the same
+ * remedy — PATCH settings streaming_mode=true re-arms the same card.
  */
 export const FEISHU_CARDKIT_STREAMING_CLOSED_CODE = 300309;
+const CARDKIT_STREAMING_CLOSED_CODES = new Set([FEISHU_CARDKIT_STREAMING_CLOSED_CODE, 200850]);
 
 export function isCardKitStreamingClosedError(error: unknown): boolean {
   return (
-    error instanceof FeishuCardKitError &&
-    error.cardKitCode === FEISHU_CARDKIT_STREAMING_CLOSED_CODE
+    error instanceof FeishuCardKitError && CARDKIT_STREAMING_CLOSED_CODES.has(error.cardKitCode)
   );
 }
 

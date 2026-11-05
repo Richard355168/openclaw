@@ -30,11 +30,13 @@ function resolveStreamingCardSendMode(options?: {
 import {
   assertSuccessfulCardKitResponse,
   cancelUnreadResponseBody,
+  FEISHU_CARDKIT_STREAMING_CLOSED_CODE,
   getToken,
   isCardKitStreamingClosedError,
   resolveAllowedHostnames,
   resolveApiBase,
   type Credentials,
+  FeishuCardKitError,
   type FeishuStreamingDeps,
   type FeishuStreamingFetch,
   shouldPushStreamingUpdate,
@@ -43,11 +45,23 @@ import {
 } from "./streaming-card-wire.js";
 
 /**
- * Feishu closes a card's streaming mode 10 minutes after creation regardless of
- * update activity. Roll the session onto a fresh card at 9 minutes so long turns
- * never hit the platform's streaming-closed rejection mid-answer.
+ * Feishu closes a card's streaming mode 10 minutes after its last activation
+ * regardless of update activity. Re-arm the SAME card's streaming window at 9
+ * minutes (PATCH settings streaming_mode=true restarts the platform window) so
+ * long turns keep a single card with typewriter streaming — no extra cards.
+ * Verified against live CardKit (2026-11-05): closed card + settings re-arm
+ * accepts content writes again with code 0.
  */
 export const STREAMING_CARD_MAX_AGE_MS = 9 * 60_000;
+
+/**
+ * Minimum spacing between re-arm attempts. update() runs once per provider
+ * delta; without this gate a persistently failing re-arm would burn one
+ * settings PATCH per delta (the rejected-write loop this class exists to
+ * prevent, at a faster rate). Closeout is throttled by it too — acceptable,
+ * a turn's final write usually lands more than 2s after the last update.
+ */
+const REARM_RETRY_MIN_INTERVAL_MS = 2_000;
 
 type CardState = {
   cardId: string;
@@ -143,13 +157,15 @@ export class FeishuStreamingSession {
   private fetchImpl?: FeishuStreamingFetch;
   private lookupFn?: LookupFn;
   // Platform streaming window: activation clock (restarted on every re-arm)
-  // and the dead flag for a card whose streaming mode the platform closed.
-  // A dead card short-circuits writes but every update re-attempts one re-arm
-  // (PATCH settings streaming_mode=true — the official remedy for 300309),
-  // so a late re-arm self-heals instead of retry-looping rejected writes.
+  // and the dead flag. The flag means "the platform CONFIRMED this card's
+  // streaming mode is closed" — it is set only by a classified rejection on
+  // the write path, never by a re-arm PATCH failure (a network blip must not
+  // demote the final answer to the dispatcher fallback while the card may
+  // still be writable). Dead cards self-heal: every update and the closeout
+  // attempt one re-arm before giving up.
   private startedAtMs: number | null = null;
   private cardStreamingDead = false;
-  private rearmOutcome = false;
+  private lastRearmAttemptMs = 0;
 
   constructor(
     client: Client,
@@ -425,15 +441,15 @@ export class FeishuStreamingSession {
     // The caller supplies the complete current card text. CardKit derives its own
     // display delta, so merging snapshots here can duplicate divergent reasoning.
     this.state.currentText = text;
-    if (this.startedAtMs !== null && Date.now() - this.startedAtMs >= STREAMING_CARD_MAX_AGE_MS) {
-      // Re-arm the SAME card before the platform's 10-minute window closes it:
-      // one card for the whole turn, no extra messages in the chat.
-      if (!(await this.rearmStreaming())) {
-        return;
-      }
-    } else if (this.cardStreamingDead) {
-      // A rejected write marked the card dead (platform closed streaming
-      // earlier than expected): attempt the official remedy once per update.
+    // Re-arm the SAME card when the platform's 10-minute window is about to
+    // close it (proactive, at the 9-minute mark) or already has (a rejected
+    // write set the dead flag): one card for the whole turn, no extra messages.
+    // The null guard matters: hand-assembled sessions (test harnesses) inject
+    // state without a start clock and must not take the proactive re-arm path.
+    if (
+      (this.startedAtMs !== null && Date.now() - this.startedAtMs >= STREAMING_CARD_MAX_AGE_MS) ||
+      this.cardStreamingDead
+    ) {
       if (!(await this.rearmStreaming())) {
         return;
       }
@@ -504,18 +520,6 @@ export class FeishuStreamingSession {
     this.clearFlushTimer();
     await this.queue;
     this.settleContentFlushWaiters();
-    return await this.closeInternal(finalText, options);
-  }
-
-  // The close body without the queue drain, so a rollover running on the write
-  // queue can close the outgoing card without awaiting its own queue entry.
-  private async closeInternal(
-    finalText?: string,
-    options?: { note?: string },
-  ): Promise<FeishuStreamingCloseResult> {
-    if (!this.state) {
-      return { visibleReplySent: false };
-    }
 
     const text = finalText ?? this.pendingText ?? this.state.currentText;
     // A failed final rewrite does not erase previously accepted visible content.
@@ -527,15 +531,19 @@ export class FeishuStreamingSession {
     // An explicit empty final text clears a transient preview before closeout.
     if ((text || finalText !== undefined) && text !== this.state.sentText) {
       if (this.cardStreamingDead) {
-        // The platform closed streaming on this card and re-arm did not
-        // recover it: the write is a guaranteed rejection. Report the
-        // rejected-final contract so the dispatcher delivers the answer
-        // another way instead of hammering a dead card.
-        finalWriteError = new Error(
-          "Update card content failed: streaming mode is closed by the platform (10-minute window)",
-        );
-        this.log?.("Final update skipped: streaming mode already closed");
-      } else {
+        // The platform closed streaming on this card. The final answer is the
+        // highest-value write of the turn: attempt the same re-arm remedy the
+        // mid-turn path uses before demoting the answer to the dispatcher
+        // fallback (which delivers it as NEW messages — extra chat noise).
+        if (!(await this.rearmStreaming())) {
+          finalWriteError = new FeishuCardKitError(
+            "Update card content failed: streaming mode is closed by the platform (10-minute window)",
+            FEISHU_CARDKIT_STREAMING_CLOSED_CODE,
+          );
+          this.log?.("Final update skipped: streaming mode already closed");
+        }
+      }
+      if (!this.cardStreamingDead) {
         // Always publish through the content-level form: live CardKit accepts
         // element-level replaces with code 0 but never applies them while
         // streaming_mode is on, and a progress-draft final diverges from the
@@ -555,30 +563,20 @@ export class FeishuStreamingSession {
     }
 
     // Update note with final model/provider info
-    if (options?.note) {
+    if (options?.note && !this.cardStreamingDead) {
+      // Same dead-card gate as the content write: a note PUT against a card
+      // whose streaming the platform closed is a guaranteed rejection.
       await this.updateNoteContent(options.note);
     }
 
     // Close streaming mode
     // A rejected final write must not advertise content that CardKit never accepted.
     const acceptedText = this.state.sentText;
-    this.state.sequence += 1;
     let closeError: unknown;
     try {
-      await this.requestCardKit(
-        `/${this.state.cardId}/settings`,
+      await this.patchCardSettings(
         "close",
-        "PATCH",
-        () => ({
-          settings: JSON.stringify({
-            config: {
-              streaming_mode: false,
-              summary: { content: truncateSummary(acceptedText) },
-            },
-          }),
-          sequence: this.state!.sequence,
-          uuid: `c_${this.state!.cardId}_${this.state!.sequence}`,
-        }),
+        { streaming_mode: false, summary: { content: truncateSummary(acceptedText) } },
         (response, auditContext) =>
           assertSuccessfulCardKitResponse(response, auditContext, "Close streaming card"),
       );
@@ -610,43 +608,73 @@ export class FeishuStreamingSession {
     return result;
   }
 
-  // Re-arms the SAME card's streaming mode before the platform's 10-minute
-  // window closes it (PATCH settings streaming_mode=true restarts the window;
-  // live-verified 2026-11-05: closed card accepts content writes again after
-  // re-arm). Runs on the write queue so it cannot interleave with a flush.
-  // One attempt per call; a failed re-arm marks the card dead and the caller
-  // falls through to the rejected-final contract.
+  // Shared settings PATCH: same wire shape for re-arm (streaming_mode=true)
+  // and closeout (streaming_mode=false + summary); config is the only variance.
+  private async patchCardSettings(
+    operation: "close" | "rearm",
+    config: Record<string, unknown>,
+    readResponse: (response: Response, auditContext: string) => Promise<void>,
+  ): Promise<void> {
+    if (!this.state) {
+      throw new Error(`Card settings ${operation} without an active card`);
+    }
+    this.state.sequence += 1;
+    await this.requestCardKit(
+      `/${this.state.cardId}/settings`,
+      operation,
+      "PATCH",
+      () => ({
+        settings: JSON.stringify({ config }),
+        sequence: this.state!.sequence,
+        uuid: `${operation[0]}_${this.state!.cardId}_${this.state!.sequence}`,
+      }),
+      readResponse,
+    );
+  }
+
+  // Re-arms the SAME card's streaming mode (PATCH settings streaming_mode=true
+  // restarts the platform's 10-minute window; live-verified 2026-11-05: a
+  // closed card accepts content writes again after re-arm). Runs on the write
+  // queue so it cannot interleave with a flush. One attempt per call; the
+  // attempt outcome does NOT touch cardStreamingDead — that flag is reserved
+  // for platform-confirmed rejections on the write path, so a failed re-arm
+  // (network blip) cannot demote a still-writable card's final answer.
   private rearmStreaming(): Promise<boolean> {
+    let outcome = false;
     this.queue = this.queue.then(async () => {
-      this.rearmOutcome = false;
-      if (!this.state || this.closed) {
+      if (!this.state) {
         return;
       }
-      this.state.sequence += 1;
+      const now = Date.now();
+      // Already re-armed by an earlier queued attempt: nothing to do, writes
+      // can proceed (guards the burst of updates arriving mid-re-arm).
+      if (
+        !this.cardStreamingDead &&
+        this.startedAtMs !== null &&
+        now - this.startedAtMs < STREAMING_CARD_MAX_AGE_MS
+      ) {
+        outcome = true;
+        return;
+      }
+      // Persistent-failure throttle: never spend a settings PATCH per delta.
+      if (now - this.lastRearmAttemptMs < REARM_RETRY_MIN_INTERVAL_MS) {
+        return;
+      }
+      this.lastRearmAttemptMs = now;
       try {
-        await this.requestCardKit(
-          `/${this.state.cardId}/settings`,
-          "rearm",
-          "PATCH",
-          () => ({
-            settings: JSON.stringify({ config: { streaming_mode: true } }),
-            sequence: this.state!.sequence,
-            uuid: `r_${this.state!.cardId}_${this.state!.sequence}`,
-          }),
-          (response, auditContext) =>
-            assertSuccessfulCardKitResponse(response, auditContext, "Re-arm streaming card"),
+        await this.patchCardSettings("rearm", { streaming_mode: true }, (response, auditContext) =>
+          assertSuccessfulCardKitResponse(response, auditContext, "Re-arm streaming card"),
         );
         this.cardStreamingDead = false;
         // The platform restarts its 10-minute window from this activation.
         this.startedAtMs = Date.now();
-        this.rearmOutcome = true;
+        outcome = true;
         this.log?.("Streaming window re-armed on the same card");
       } catch (error) {
-        this.cardStreamingDead = true;
         this.log?.(`Streaming re-arm failed: ${String(error)}`);
       }
     });
-    return this.queue.then(() => this.rearmOutcome);
+    return this.queue.then(() => outcome);
   }
 
   async discard(): Promise<FeishuStreamingCloseResult> {
