@@ -649,7 +649,7 @@ describe("FeishuStreamingSession", () => {
     await vi.advanceTimersByTimeAsync(160);
 
     expect(log).toHaveBeenCalledWith(
-      "Update failed: Error: Update card content failed: sequence rejected (code=19001)",
+      "Update failed: FeishuCardKitError: Update card content failed: sequence rejected (code=19001)",
     );
     expect(updateBodies).toHaveLength(2);
     expect(updateBodies.map((body) => JSON.parse(body).content)).toEqual([
@@ -933,7 +933,7 @@ describe("FeishuStreamingSession", () => {
     expect(settings.config?.summary?.content).toBe(previous.replaceAll("\n", " ").trim());
     expect(settings.config?.summary?.content).not.toContain("Thinking two");
     expect(log).toHaveBeenCalledWith(
-      "Final update failed: Error: Update card content failed: replacement rejected (code=19002)",
+      "Final update failed: FeishuCardKitError: Update card content failed: replacement rejected (code=19002)",
     );
   });
 
@@ -984,10 +984,10 @@ describe("FeishuStreamingSession", () => {
     expect(noteBodies).toHaveLength(1);
     expect(settingsBodies).toHaveLength(1);
     expect(log).toHaveBeenCalledWith(
-      "Note update failed: Error: Update card note failed: note rejected (code=19003)",
+      "Note update failed: FeishuCardKitError: Update card note failed: note rejected (code=19003)",
     );
     expect(log).toHaveBeenCalledWith(
-      "Close failed: Error: Close streaming card failed: settings rejected (code=19004)",
+      "Close failed: FeishuCardKitError: Close streaming card failed: settings rejected (code=19004)",
     );
   });
 
@@ -1331,6 +1331,206 @@ describe("mergeStreamingText", () => {
       "revision_id: 552，一点变化都没有",
     );
     expect(mergeStreamingText("abc", "cabc")).toBe("cabc");
+  });
+});
+
+describe("FeishuStreamingSession streaming-mode expiry", () => {
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    while (serverStops.length > 0) {
+      await serverStops.pop()?.();
+    }
+  });
+
+  function setSessionClock(session: FeishuStreamingSession, startedAtMs: number): void {
+    (session as unknown as { startedAtMs: number }).startedAtMs = startedAtMs;
+  }
+
+  function expiryFetch(options?: { failNewCard?: boolean }): {
+    deps: StreamingFetchDeps;
+    contentPuts: string[];
+    cardCreates: string[];
+    patches: string[];
+  } {
+    const contentPuts: string[] = [];
+    const cardCreates: string[] = [];
+    const patches: string[] = [];
+    const deps = createMemoryFetch((url, body) => {
+      if (url.pathname.includes("/auth/")) {
+        return jsonResponse({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 });
+      }
+      if (url.pathname.endsWith("/cardkit/v1/cards")) {
+        cardCreates.push(body);
+        // failNewCard rejects every create after the first, so the initial
+        // start succeeds and only the rollover's continuation card fails.
+        if (options?.failNewCard && cardCreates.length > 1) {
+          return jsonResponse({ code: 99901, msg: "card creation rejected" });
+        }
+        return jsonResponse({
+          code: 0,
+          msg: "ok",
+          data: { card_id: `card-${cardCreates.length - 1}` },
+        });
+      }
+      if (url.pathname.includes("/elements/content/content")) {
+        contentPuts.push(body);
+        // Emulate the platform's 10-minute close: only the FIRST card rejects
+        // content writes; a rolled-over fresh card streams normally.
+        if (url.pathname.startsWith("/cardkit/v1/cards/card-0/")) {
+          return jsonResponse({ code: 300309, msg: "streaming mode is closed" });
+        }
+        return jsonResponse({ code: 0, msg: "ok" });
+      }
+      if (url.pathname.includes("/settings")) {
+        patches.push(body);
+      }
+      return jsonResponse({ code: 0, msg: "ok" });
+    });
+    return { deps, contentPuts, cardCreates, patches };
+  }
+
+  function createSendingClient(): { im: { message: { create: unknown } } } {
+    return {
+      im: {
+        message: {
+          create: vi.fn(async () => ({ code: 0, data: { message_id: `om_${Date.now()}` } })),
+        },
+      },
+    };
+  }
+
+  it("rolls over to a fresh card when the platform 10-minute streaming window nears expiry", async () => {
+    const { deps, contentPuts, cardCreates, patches } = expiryFetch();
+    const session = createStreamingSession(
+      createSendingClient() as never,
+      { appId: "app", appSecret: "secret" },
+      undefined,
+      deps,
+    );
+    await session.start("chat_id", "open_id");
+    setSessionClock(session, Date.now() - (9 * 60_000 + 30_000));
+
+    await session.update("work in progress");
+
+    expect(cardCreates.length).toBe(2);
+    expect(patches.length).toBe(1);
+    // The current snapshot is written to the fresh card so the continuation is not blank.
+    expect(contentPuts.some((body) => body.includes("work in progress"))).toBe(true);
+    expect(session.isActive()).toBe(true);
+    await session.closeWithResult("done", { note: "final" });
+  });
+
+  it("rolls the continuation note forward on the fresh card", async () => {
+    const { deps, cardCreates } = expiryFetch();
+    const session = createStreamingSession(
+      createSendingClient() as never,
+      { appId: "app", appSecret: "secret" },
+      undefined,
+      deps,
+    );
+    await session.start("chat_id", "open_id");
+    setSessionClock(session, Date.now() - (9 * 60_000 + 30_000));
+
+    await session.update("still going");
+
+    expect(cardCreates.length).toBe(2);
+    const createPayload = JSON.parse(cardCreates[1] ?? "{}") as { data?: string };
+    const cardJson = JSON.parse(createPayload.data ?? "{}") as {
+      body?: { elements?: Array<{ content?: string }> };
+    };
+    const noteElement = cardJson.body?.elements?.find((element) =>
+      (element.content ?? "").includes("continued"),
+    );
+    expect(noteElement).toBeDefined();
+    await session.closeWithResult("done");
+  });
+
+  it("short-circuits updates on an already-closed card and finalizes with the rejected-final contract", async () => {
+    const { deps, contentPuts, patches } = expiryFetch();
+    const logs: string[] = [];
+    const session = createActiveSession(deps, {
+      cardId: "card-dead",
+      messageId: "om_dead",
+      text: "last accepted",
+      log: (message) => logs.push(message),
+    });
+    // Emulate a write that already observed the platform's 300309 close.
+    (session as unknown as { cardStreamingDead: boolean }).cardStreamingDead = true;
+
+    await session.update("next snapshot");
+    await session.update("another snapshot");
+    expect(contentPuts.length).toBe(0);
+
+    let finalizationError: unknown;
+    let closeResult: Awaited<ReturnType<FeishuStreamingSession["closeWithResult"]>> | undefined;
+    try {
+      closeResult = await session.closeWithResult("the completed answer");
+    } catch (error) {
+      finalizationError = error;
+    }
+    expect(finalizationError).toBeInstanceOf(FeishuStreamingFinalizationError);
+    const failure = finalizationError as FeishuStreamingFinalizationError;
+    expect(failure.result.finalTextAccepted).toBe(false);
+    // The last accepted write remains visible content.
+    expect(failure.result.visibleReplySent).toBe(true);
+    expect(closeResult).toBeUndefined();
+    // The idempotent settings close still runs to clear the streaming summary.
+    expect(patches.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("keeps retrying ordinary write failures the way it did before", async () => {
+    const updateBodies: string[] = [];
+    const deps = createMemoryFetch((url, body) => {
+      if (url.pathname.includes("/auth/")) {
+        return jsonResponse({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 });
+      }
+      if (url.pathname.includes("/elements/content/content")) {
+        updateBodies.push(body);
+        return jsonResponse({ code: 500, msg: "internal hiccup" });
+      }
+      return jsonResponse({ code: 0, msg: "ok" });
+    });
+    const session = createActiveSession(deps, {
+      cardId: "card-flaky",
+      messageId: "om_flaky",
+      text: "accepted",
+    });
+    setSessionClock(session, Date.now() - 1000);
+
+    await session.update("snapshot one");
+    // The second update lands inside the throttle window; wait for the
+    // scheduled flush timer before asserting the retry went out.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await session.update("snapshot two");
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(updateBodies.length).toBe(2);
+  });
+
+  it("marks the session dead when rollover cannot create the continuation card", async () => {
+    const { deps, patches } = expiryFetch({ failNewCard: true });
+    const session = createStreamingSession(
+      createSendingClient() as never,
+      { appId: "app", appSecret: "secret" },
+      undefined,
+      deps,
+    );
+    await session.start("chat_id", "open_id");
+    setSessionClock(session, Date.now() - (9 * 60_000 + 30_000));
+
+    await session.update("progress before failure");
+    expect(session.isActive()).toBe(false);
+
+    let finalizationError: unknown;
+    try {
+      await session.closeWithResult("the completed answer");
+    } catch (error) {
+      finalizationError = error;
+    }
+    expect(finalizationError).toBeInstanceOf(FeishuStreamingFinalizationError);
+    const failure = finalizationError as FeishuStreamingFinalizationError;
+    expect(failure.result.finalTextAccepted).toBe(false);
+    expect(failure.result.visibleReplySent).toBe(false);
+    expect(patches.length).toBeGreaterThanOrEqual(1);
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

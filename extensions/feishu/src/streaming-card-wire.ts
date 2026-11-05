@@ -100,8 +100,36 @@ export async function assertSuccessfulCardKitResponse(
   }
   const data = await readFeishuJsonResponse<CardKitResponse>(response, auditContext);
   if (data.code !== 0) {
-    throw new Error(`${action} failed: ${data.msg ?? "unknown error"} (code=${String(data.code)})`);
+    throw new FeishuCardKitError(
+      `${action} failed: ${data.msg ?? "unknown error"} (code=${String(data.code)})`,
+      data.code ?? 0,
+    );
   }
+}
+
+/** CardKit API rejection that carries the platform error code for callers that branch on it. */
+export class FeishuCardKitError extends Error {
+  readonly cardKitCode: number;
+
+  constructor(message: string, cardKitCode: number) {
+    super(message);
+    this.name = "FeishuCardKitError";
+    this.cardKitCode = cardKitCode;
+  }
+}
+
+/**
+ * Feishu closes a card's streaming mode automatically 10 minutes after creation,
+ * regardless of update activity (CardKit streaming updates overview); content
+ * writes against the closed card are rejected with code 300309.
+ */
+export const FEISHU_CARDKIT_STREAMING_CLOSED_CODE = 300309;
+
+export function isCardKitStreamingClosedError(error: unknown): boolean {
+  return (
+    error instanceof FeishuCardKitError &&
+    error.cardKitCode === FEISHU_CARDKIT_STREAMING_CLOSED_CODE
+  );
 }
 
 export async function getToken(creds: Credentials, deps?: FeishuStreamingDeps): Promise<string> {
