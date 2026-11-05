@@ -142,21 +142,14 @@ export class FeishuStreamingSession {
   private updateThrottleMs = STREAMING_UPDATE_THROTTLE_MS;
   private fetchImpl?: FeishuStreamingFetch;
   private lookupFn?: LookupFn;
-  // Platform streaming window: created-at clock, replayable start arguments,
-  // and the two death levels — a card whose streaming mode the platform closed
-  // (rejects writes with 300309) versus a session that lost its card entirely
-  // (rollover failed). The session level suppresses isActive so the dispatcher
-  // still finalizes through the rejected-final contract and recovers the answer.
+  // Platform streaming window: activation clock (restarted on every re-arm)
+  // and the dead flag for a card whose streaming mode the platform closed.
+  // A dead card short-circuits writes but every update re-attempts one re-arm
+  // (PATCH settings streaming_mode=true — the official remedy for 300309),
+  // so a late re-arm self-heals instead of retry-looping rejected writes.
   private startedAtMs: number | null = null;
-  private startContext: {
-    receiveId: string;
-    receiveIdType: "open_id" | "user_id" | "union_id" | "email" | "chat_id";
-    options?: StreamingCardOptions & StreamingStartOptions;
-  } | null = null;
   private cardStreamingDead = false;
-  private sessionDead = false;
-  private rolloverCount = 0;
-  private rolloverPromise: Promise<void> | null = null;
+  private rearmOutcome = false;
 
   constructor(
     client: Client,
@@ -321,7 +314,6 @@ export class FeishuStreamingSession {
       hasNote: Boolean(options?.note),
     };
     this.startedAtMs = Date.now();
-    this.startContext = { receiveId, receiveIdType, options };
     this.log?.(`Started streaming: cardId=${cardId}${messageId ? `, messageId=${messageId}` : ""}`);
   }
 
@@ -404,13 +396,7 @@ export class FeishuStreamingSession {
         );
         if (sent && this.state) {
           this.state.sentText = nextText;
-        } else if (
-          !sent &&
-          this.state &&
-          !this.closed &&
-          !this.cardStreamingDead &&
-          !this.sessionDead
-        ) {
+        } else if (!sent && this.state && !this.closed && !this.cardStreamingDead) {
           // A rejected write must not lose the text: keep it pending so the
           // next update retries it. Retries stay caller-driven — a rejected
           // write self-rescheduling here would retry-loop against an outage,
@@ -436,24 +422,22 @@ export class FeishuStreamingSession {
     if (!this.state || this.closed || !text) {
       return;
     }
-    if (this.sessionDead || this.cardStreamingDead) {
-      // Streaming writes are guaranteed rejections; keep the latest snapshot
-      // for the final settlement and let the rejected-final contract deliver it.
-      this.state.currentText = text;
-      return;
-    }
-    if (this.startedAtMs !== null && Date.now() - this.startedAtMs >= STREAMING_CARD_MAX_AGE_MS) {
-      await this.ensureRolledOver();
-      if (!this.state || this.closed || this.sessionDead || this.cardStreamingDead) {
-        if (this.state) {
-          this.state.currentText = text;
-        }
-        return;
-      }
-    }
     // The caller supplies the complete current card text. CardKit derives its own
     // display delta, so merging snapshots here can duplicate divergent reasoning.
     this.state.currentText = text;
+    if (this.startedAtMs !== null && Date.now() - this.startedAtMs >= STREAMING_CARD_MAX_AGE_MS) {
+      // Re-arm the SAME card before the platform's 10-minute window closes it:
+      // one card for the whole turn, no extra messages in the chat.
+      if (!(await this.rearmStreaming())) {
+        return;
+      }
+    } else if (this.cardStreamingDead) {
+      // A rejected write marked the card dead (platform closed streaming
+      // earlier than expected): attempt the official remedy once per update.
+      if (!(await this.rearmStreaming())) {
+        return;
+      }
+    }
     this.pendingText = text;
     this.clearFlushTimer();
 
@@ -542,11 +526,11 @@ export class FeishuStreamingSession {
     // Only send final update if content differs from what's already displayed.
     // An explicit empty final text clears a transient preview before closeout.
     if ((text || finalText !== undefined) && text !== this.state.sentText) {
-      if (this.cardStreamingDead || this.sessionDead) {
-        // The platform closed streaming on this card (10-minute window) or the
-        // session lost its card in a failed rollover: the write is a guaranteed
-        // rejection. Report the rejected-final contract so the dispatcher
-        // delivers the answer another way instead of hammering a dead card.
+      if (this.cardStreamingDead) {
+        // The platform closed streaming on this card and re-arm did not
+        // recover it: the write is a guaranteed rejection. Report the
+        // rejected-final contract so the dispatcher delivers the answer
+        // another way instead of hammering a dead card.
         finalWriteError = new Error(
           "Update card content failed: streaming mode is closed by the platform (10-minute window)",
         );
@@ -626,69 +610,43 @@ export class FeishuStreamingSession {
     return result;
   }
 
-  // Rolls the session onto a fresh card before the platform's 10-minute
-  // streaming window closes the current one. Runs on the write queue so it
-  // cannot interleave with a flush; concurrent updates share one rollover.
-  private ensureRolledOver(): Promise<void> {
-    this.rolloverPromise ??= this.performRollover().finally(() => {
-      this.rolloverPromise = null;
-    });
-    return this.rolloverPromise;
-  }
-
-  private performRollover(): Promise<void> {
+  // Re-arms the SAME card's streaming mode before the platform's 10-minute
+  // window closes it (PATCH settings streaming_mode=true restarts the window;
+  // live-verified 2026-11-05: closed card accepts content writes again after
+  // re-arm). Runs on the write queue so it cannot interleave with a flush.
+  // One attempt per call; a failed re-arm marks the card dead and the caller
+  // falls through to the rejected-final contract.
+  private rearmStreaming(): Promise<boolean> {
     this.queue = this.queue.then(async () => {
-      if (!this.state || this.closed || this.sessionDead) {
+      this.rearmOutcome = false;
+      if (!this.state || this.closed) {
         return;
       }
-      const context = this.startContext;
-      if (!context) {
-        // No replayable start arguments: the session cannot continue streaming.
-        this.sessionDead = true;
-        return;
-      }
-      const previousState = this.state;
-      const carryText = previousState.sentText || previousState.currentText;
-      this.rolloverCount += 1;
-      // Best-effort close of the outgoing card. The platform may have closed
-      // its streaming mode already; a rejected close must not block the new
-      // card, and closeInternal clears state as part of its contract.
-      this.closed = true;
+      this.state.sequence += 1;
       try {
-        await this.closeInternal(carryText);
-      } catch (error) {
-        this.log?.(`Rollover close of previous card failed: ${String(error)}`);
-      }
-      this.closed = false;
-      try {
-        await this.start(context.receiveId, context.receiveIdType, {
-          ...context.options,
-          // The continuation note lands on the fresh card: it tells the reader
-          // this is card N of an ongoing turn and when the card took over.
-          note: `continued · card #${this.rolloverCount + 1} · started ${new Date().toLocaleTimeString("en-GB", { hour12: false })}`,
-        });
+        await this.requestCardKit(
+          `/${this.state.cardId}/settings`,
+          "rearm",
+          "PATCH",
+          () => ({
+            settings: JSON.stringify({ config: { streaming_mode: true } }),
+            sequence: this.state!.sequence,
+            uuid: `r_${this.state!.cardId}_${this.state!.sequence}`,
+          }),
+          (response, auditContext) =>
+            assertSuccessfulCardKitResponse(response, auditContext, "Re-arm streaming card"),
+        );
         this.cardStreamingDead = false;
-        if (this.state && carryText) {
-          // Seed the fresh card with the in-flight snapshot so the continuation
-          // is not blank; the next caller update replaces it wholesale anyway.
-          const seeded = await this.writeCardContent(carryText);
-          if (seeded && this.state) {
-            this.state.sentText = carryText;
-          }
-        }
-        this.log?.(`Rolled over to fresh streaming card (#${this.rolloverCount + 1})`);
+        // The platform restarts its 10-minute window from this activation.
+        this.startedAtMs = Date.now();
+        this.rearmOutcome = true;
+        this.log?.("Streaming window re-armed on the same card");
       } catch (error) {
-        // Restore the outgoing card's receipt so the eventual closeWithResult
-        // still finalizes through the rejected-final contract and the
-        // dispatcher recovers the answer.
-        this.sessionDead = true;
-        this.state = previousState;
-        this.pendingText = null;
-        this.closed = false;
-        this.log?.(`Rollover failed; streaming stopped for this session: ${String(error)}`);
+        this.cardStreamingDead = true;
+        this.log?.(`Streaming re-arm failed: ${String(error)}`);
       }
     });
-    return this.queue;
+    return this.queue.then(() => this.rearmOutcome);
   }
 
   async discard(): Promise<FeishuStreamingCloseResult> {
@@ -725,6 +683,6 @@ export class FeishuStreamingSession {
   }
 
   isActive(): boolean {
-    return this.state !== null && !this.closed && !this.sessionDead;
+    return this.state !== null && !this.closed;
   }
 }

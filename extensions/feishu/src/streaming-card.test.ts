@@ -1346,7 +1346,7 @@ describe("FeishuStreamingSession streaming-mode expiry", () => {
     (session as unknown as { startedAtMs: number }).startedAtMs = startedAtMs;
   }
 
-  function expiryFetch(options?: { failNewCard?: boolean }): {
+  function expiryFetch(options?: { failRearm?: boolean; failFirstPut?: boolean }): {
     deps: StreamingFetchDeps;
     contentPuts: string[];
     cardCreates: string[];
@@ -1361,11 +1361,6 @@ describe("FeishuStreamingSession streaming-mode expiry", () => {
       }
       if (url.pathname.endsWith("/cardkit/v1/cards")) {
         cardCreates.push(body);
-        // failNewCard rejects every create after the first, so the initial
-        // start succeeds and only the rollover's continuation card fails.
-        if (options?.failNewCard && cardCreates.length > 1) {
-          return jsonResponse({ code: 99901, msg: "card creation rejected" });
-        }
         return jsonResponse({
           code: 0,
           msg: "ok",
@@ -1374,15 +1369,17 @@ describe("FeishuStreamingSession streaming-mode expiry", () => {
       }
       if (url.pathname.includes("/elements/content/content")) {
         contentPuts.push(body);
-        // Emulate the platform's 10-minute close: only the FIRST card rejects
-        // content writes; a rolled-over fresh card streams normally.
-        if (url.pathname.startsWith("/cardkit/v1/cards/card-0/")) {
+        // Emulate the platform closing streaming mode on the first write.
+        if (options?.failFirstPut && contentPuts.length === 1) {
           return jsonResponse({ code: 300309, msg: "streaming mode is closed" });
         }
         return jsonResponse({ code: 0, msg: "ok" });
       }
       if (url.pathname.includes("/settings")) {
         patches.push(body);
+        if (options?.failRearm) {
+          return jsonResponse({ code: 99901, msg: "settings rejected" });
+        }
       }
       return jsonResponse({ code: 0, msg: "ok" });
     });
@@ -1399,7 +1396,7 @@ describe("FeishuStreamingSession streaming-mode expiry", () => {
     };
   }
 
-  it("rolls over to a fresh card when the platform 10-minute streaming window nears expiry", async () => {
+  it("re-arms the same card when the 10-minute streaming window nears expiry", async () => {
     const { deps, contentPuts, cardCreates, patches } = expiryFetch();
     const session = createStreamingSession(
       createSendingClient() as never,
@@ -1412,16 +1409,27 @@ describe("FeishuStreamingSession streaming-mode expiry", () => {
 
     await session.update("work in progress");
 
-    expect(cardCreates.length).toBe(2);
+    // No new card: the SAME card keeps streaming for the whole turn.
+    expect(cardCreates.length).toBe(1);
+    // One settings PATCH re-armed streaming_mode to true on the same card.
     expect(patches.length).toBe(1);
-    // The current snapshot is written to the fresh card so the continuation is not blank.
+    const rearmBody = JSON.parse(patches[0] ?? "{}") as { settings?: string };
+    const rearmConfig = JSON.parse(rearmBody.settings ?? "{}") as {
+      config?: { streaming_mode?: boolean };
+    };
+    expect(rearmConfig.config?.streaming_mode).toBe(true);
+    // The in-flight snapshot continues on the same card.
     expect(contentPuts.some((body) => body.includes("work in progress"))).toBe(true);
     expect(session.isActive()).toBe(true);
+
+    // The activation clock restarted: further updates do not re-arm again.
+    await session.update("more progress");
+    expect(patches.length).toBe(1);
     await session.closeWithResult("done", { note: "final" });
   });
 
-  it("rolls the continuation note forward on the fresh card", async () => {
-    const { deps, cardCreates } = expiryFetch();
+  it("re-arms automatically after the platform rejects a write", async () => {
+    const { deps, contentPuts, patches } = expiryFetch({ failFirstPut: true });
     const session = createStreamingSession(
       createSendingClient() as never,
       { appId: "app", appSecret: "secret" },
@@ -1429,37 +1437,39 @@ describe("FeishuStreamingSession streaming-mode expiry", () => {
       deps,
     );
     await session.start("chat_id", "open_id");
-    setSessionClock(session, Date.now() - (9 * 60_000 + 30_000));
 
-    await session.update("still going");
+    // First write hits the platform-closed card and gets rejected.
+    await session.update("rejected snapshot");
+    expect(contentPuts.length).toBe(1);
 
-    expect(cardCreates.length).toBe(2);
-    const createPayload = JSON.parse(cardCreates[1] ?? "{}") as { data?: string };
-    const cardJson = JSON.parse(createPayload.data ?? "{}") as {
-      body?: { elements?: Array<{ content?: string }> };
-    };
-    const noteElement = cardJson.body?.elements?.find((element) =>
-      (element.content ?? "").includes("continued"),
-    );
-    expect(noteElement).toBeDefined();
+    // The next update self-heals: re-arm, then deliver the snapshot on the same card.
+    await session.update("recovered snapshot");
+    expect(patches.length).toBe(1);
+    expect(contentPuts.length).toBe(2);
+    const internals = session as unknown as { state: { sentText: string } };
+    expect(internals.state.sentText).toBe("recovered snapshot");
     await session.closeWithResult("done");
   });
 
-  it("short-circuits updates on an already-closed card and finalizes with the rejected-final contract", async () => {
-    const { deps, contentPuts, patches } = expiryFetch();
+  it("short-circuits when re-arm fails and finalizes with the rejected-final contract", async () => {
+    const { deps, contentPuts, patches } = expiryFetch({ failRearm: true });
     const logs: string[] = [];
-    const session = createActiveSession(deps, {
-      cardId: "card-dead",
-      messageId: "om_dead",
-      text: "last accepted",
-      log: (message) => logs.push(message),
-    });
-    // Emulate a write that already observed the platform's 300309 close.
-    (session as unknown as { cardStreamingDead: boolean }).cardStreamingDead = true;
+    const session = createStreamingSession(
+      createSendingClient() as never,
+      { appId: "app", appSecret: "secret" },
+      (message) => logs.push(message),
+      deps,
+    );
+    await session.start("chat_id", "open_id");
+    setSessionClock(session, Date.now() - (9 * 60_000 + 30_000));
 
-    await session.update("next snapshot");
+    await session.update("progress before failure");
+    expect(contentPuts.length).toBe(0);
+
+    // Later updates keep retrying the re-arm once each, never content writes.
     await session.update("another snapshot");
     expect(contentPuts.length).toBe(0);
+    expect(patches.length).toBe(2);
 
     let finalizationError: unknown;
     let closeResult: Awaited<ReturnType<FeishuStreamingSession["closeWithResult"]>> | undefined;
@@ -1471,11 +1481,8 @@ describe("FeishuStreamingSession streaming-mode expiry", () => {
     expect(finalizationError).toBeInstanceOf(FeishuStreamingFinalizationError);
     const failure = finalizationError as FeishuStreamingFinalizationError;
     expect(failure.result.finalTextAccepted).toBe(false);
-    // The last accepted write remains visible content.
-    expect(failure.result.visibleReplySent).toBe(true);
+    expect(failure.result.visibleReplySent).toBe(false);
     expect(closeResult).toBeUndefined();
-    // The idempotent settings close still runs to clear the streaming summary.
-    expect(patches.length).toBeGreaterThanOrEqual(1);
   });
 
   it("keeps retrying ordinary write failures the way it did before", async () => {
@@ -1505,32 +1512,4 @@ describe("FeishuStreamingSession streaming-mode expiry", () => {
     await new Promise((resolve) => setTimeout(resolve, 250));
     expect(updateBodies.length).toBe(2);
   });
-
-  it("marks the session dead when rollover cannot create the continuation card", async () => {
-    const { deps, patches } = expiryFetch({ failNewCard: true });
-    const session = createStreamingSession(
-      createSendingClient() as never,
-      { appId: "app", appSecret: "secret" },
-      undefined,
-      deps,
-    );
-    await session.start("chat_id", "open_id");
-    setSessionClock(session, Date.now() - (9 * 60_000 + 30_000));
-
-    await session.update("progress before failure");
-    expect(session.isActive()).toBe(false);
-
-    let finalizationError: unknown;
-    try {
-      await session.closeWithResult("the completed answer");
-    } catch (error) {
-      finalizationError = error;
-    }
-    expect(finalizationError).toBeInstanceOf(FeishuStreamingFinalizationError);
-    const failure = finalizationError as FeishuStreamingFinalizationError;
-    expect(failure.result.finalTextAccepted).toBe(false);
-    expect(failure.result.visibleReplySent).toBe(false);
-    expect(patches.length).toBeGreaterThanOrEqual(1);
-  });
 });
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
