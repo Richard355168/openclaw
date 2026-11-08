@@ -92,8 +92,38 @@ export async function assertSuccessfulCardKitResponse(
   }
   const data = await readProviderJsonResponse<CardKitResponse>(response, auditContext);
   if (data.code !== 0) {
-    throw new Error(`${action} failed: ${data.msg ?? "unknown error"} (code=${String(data.code)})`);
+    throw new FeishuCardKitError(
+      `${action} failed: ${data.msg ?? "unknown error"} (code=${String(data.code)})`,
+      data.code ?? 0,
+    );
   }
+}
+
+/** CardKit API rejection that carries the platform error code for callers that branch on it. */
+export class FeishuCardKitError extends Error {
+  readonly cardKitCode: number;
+
+  constructor(message: string, cardKitCode: number) {
+    super(message);
+    this.name = "FeishuCardKitError";
+    this.cardKitCode = cardKitCode;
+  }
+}
+
+/**
+ * Feishu closes a card's streaming mode 10 minutes after its last activation
+ * regardless of update activity (CardKit streaming updates overview). Content
+ * writes against the closed card are rejected with code 300309; the timeout
+ * path reports the same condition as 200850. Both codes prescribe the same
+ * remedy — PATCH settings streaming_mode=true re-arms the same card.
+ */
+export const FEISHU_CARDKIT_STREAMING_CLOSED_CODE = 300309;
+const CARDKIT_STREAMING_CLOSED_CODES = new Set([FEISHU_CARDKIT_STREAMING_CLOSED_CODE, 200850]);
+
+export function isCardKitStreamingClosedError(error: unknown): boolean {
+  return (
+    error instanceof FeishuCardKitError && CARDKIT_STREAMING_CLOSED_CODES.has(error.cardKitCode)
+  );
 }
 
 export async function getToken(creds: Credentials, deps?: FeishuStreamingDeps): Promise<string> {
