@@ -93,6 +93,7 @@ vi.mock("./streaming-card.js", async (importOriginal) => {
         this.active = true;
       });
       update = vi.fn(async () => {});
+      appendProcessLog = vi.fn(async () => {});
       registerContentObserver = vi.fn(async (): Promise<boolean> => true);
       closeWithResult = vi.fn<FeishuStreamingSession["closeWithResult"]>(async (text, _options) => {
         this.active = false;
@@ -172,7 +173,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
   });
 
   function createReplyAccount(
-    renderMode: "auto" | "card",
+    renderMode: "auto" | "card" | "raw",
     streamingMode: "off" | "partial",
     domain: "feishu" | "lark",
     overrides: Partial<FeishuConfig> = {},
@@ -261,19 +262,14 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
 
     const session = requireStreamingInstance(0);
     const NL_MARK = String.fromCharCode(10);
-    const calls = session.update.mock.calls.map((args: unknown[]) => String(args[0]));
-    const joined = calls.join(NL_MARK);
-    expect(joined).toContain("first narration line that is long");
-    expect(joined).not.toContain("hidden narration line");
-    expect(joined).not.toContain("suppressed narration line");
+    const logText = processLogTexts(0).join(NL_MARK);
+    // Hidden and suppressed preambles never reach the process log (patch 0006
+    // v2). The retracted p1 text stays in the log: the lane is append-only,
+    // an accepted edge — the audit record shows what was narrated.
+    expect(logText).toContain("first narration line that is long");
+    expect(logText).not.toContain("hidden narration line");
+    expect(logText).not.toContain("suppressed narration line");
     expect(session.discard).toHaveBeenCalled();
-    const afterRetractIndex = calls.findIndex((text) =>
-      text.includes("first narration line that is long"),
-    );
-    const rendersAfterRetraction = calls.slice(afterRetractIndex + 1);
-    for (const render of rendersAfterRetraction) {
-      expect(render).not.toContain("first narration line that is long");
-    }
   });
 
   it("reopens the progress gate for a turn admitted after a queued settlement", async () => {
@@ -494,6 +490,12 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
 
   function streamingUpdateTexts(instanceIndex = 0): string[] {
     return stream(instanceIndex).update.mock.calls.map((call: unknown[]) =>
+      typeof call[0] === "string" ? call[0] : "",
+    );
+  }
+
+  function processLogTexts(instanceIndex = 0): string[] {
+    return stream(instanceIndex).appendProcessLog.mock.calls.map((call: unknown[]) =>
       typeof call[0] === "string" ? call[0] : "",
     );
   }
@@ -1142,16 +1144,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
   });
 
   it("claims commentary lanes so pre-tool narration never leaks as a late reply", () => {
-    resolveFeishuAccountMock.mockReturnValue({
-      accountId: "main",
-      appId: "app_id",
-      appSecret: "app_secret",
-      domain: "feishu",
-      config: {
-        renderMode: "auto",
-        streaming: { mode: "partial" },
-      },
-    });
+    resolveFeishuAccountMock.mockReturnValue(createReplyAccount("auto", "partial", "feishu"));
 
     const { result } = createDispatcherHarness();
     expect(result.replyOptions).toHaveProperty("commentaryProgressEnabled", true);
@@ -1159,16 +1152,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
   });
 
   it("routes narration through the durable commentary lane while blocks carry the turn", () => {
-    resolveFeishuAccountMock.mockReturnValue({
-      accountId: "main",
-      appId: "app_id",
-      appSecret: "app_secret",
-      domain: "feishu",
-      config: {
-        renderMode: "auto",
-        streaming: { mode: "off" },
-      },
-    });
+    resolveFeishuAccountMock.mockReturnValue(createReplyAccount("auto", "off", "feishu"));
 
     const { result } = createDispatcherHarness({
       cfg: { agents: { defaults: { blockStreamingDefault: "on" } } } as never,
@@ -1178,16 +1162,11 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
   });
 
   it("suppresses core default progress messages when preview and blocks are both off", () => {
-    resolveFeishuAccountMock.mockReturnValue({
-      accountId: "main",
-      appId: "app_id",
-      appSecret: "app_secret",
-      domain: "feishu",
-      config: {
-        renderMode: "auto",
+    resolveFeishuAccountMock.mockReturnValue(
+      createReplyAccount("auto", "off", "feishu", {
         streaming: { mode: "off", block: { enabled: false } },
-      },
-    });
+      }),
+    );
 
     const { result } = createDispatcherHarness();
     expect(result.replyOptions).toHaveProperty("disableBlockStreaming", true);
@@ -1195,16 +1174,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
   });
 
   it("keeps core default progress messages while inherited blocks carry them", () => {
-    resolveFeishuAccountMock.mockReturnValue({
-      accountId: "main",
-      appId: "app_id",
-      appSecret: "app_secret",
-      domain: "feishu",
-      config: {
-        renderMode: "auto",
-        streaming: { mode: "off" },
-      },
-    });
+    resolveFeishuAccountMock.mockReturnValue(createReplyAccount("auto", "off", "feishu"));
 
     const { result } = createDispatcherHarness({
       cfg: { agents: { defaults: { blockStreamingDefault: "on" } } } as never,
@@ -1214,16 +1184,11 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
   });
 
   it("enables core block streaming when Feishu blockStreaming is explicitly true", async () => {
-    resolveFeishuAccountMock.mockReturnValue({
-      accountId: "main",
-      appId: "app_id",
-      appSecret: "app_secret",
-      domain: "feishu",
-      config: {
-        renderMode: "auto",
+    resolveFeishuAccountMock.mockReturnValue(
+      createReplyAccount("auto", "partial", "feishu", {
         streaming: { mode: "partial", block: { enabled: true } },
-      },
-    });
+      }),
+    );
 
     const { result, options } = createDispatcherHarness();
     expect(result.replyOptions).toHaveProperty("disableBlockStreaming", false);
@@ -1301,18 +1266,9 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
   });
 
   it("delivers mid-turn blocks as independent messages from the agent default when no preview can render", async () => {
-    resolveFeishuAccountMock.mockReturnValue({
-      accountId: "main",
-      appId: "app_id",
-      appSecret: "app_secret",
-      domain: "feishu",
-      config: {
-        // raw render mode cannot host a streaming preview card, so blocks are
-        // the only channel for mid-turn text in this reply.
-        renderMode: "raw",
-        streaming: { mode: "partial" },
-      },
-    });
+    // Raw render mode cannot host a streaming preview card, so blocks are
+    // the only channel for mid-turn text in this reply.
+    resolveFeishuAccountMock.mockReturnValue(createReplyAccount("raw", "partial", "feishu"));
 
     const { options } = createDispatcherHarness({
       cfg: { agents: { defaults: { blockStreamingDefault: "on" } } } as never,
@@ -1329,16 +1285,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
   });
 
   it("keeps blocks off when the explicit preview mode wins over the agent default", () => {
-    resolveFeishuAccountMock.mockReturnValue({
-      accountId: "main",
-      appId: "app_id",
-      appSecret: "app_secret",
-      domain: "feishu",
-      config: {
-        renderMode: "auto",
-        streaming: { mode: "partial" },
-      },
-    });
+    resolveFeishuAccountMock.mockReturnValue(createReplyAccount("auto", "partial", "feishu"));
 
     const result = createFeishuReplyDispatcher({
       cfg: { agents: { defaults: { blockStreamingDefault: "on" } } } as never,
@@ -1352,16 +1299,11 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
   });
 
   it("keeps core block streaming disabled when Feishu blockStreaming is explicitly false", async () => {
-    resolveFeishuAccountMock.mockReturnValue({
-      accountId: "main",
-      appId: "app_id",
-      appSecret: "app_secret",
-      domain: "feishu",
-      config: {
-        renderMode: "auto",
+    resolveFeishuAccountMock.mockReturnValue(
+      createReplyAccount("auto", "partial", "feishu", {
         streaming: { mode: "partial", block: { enabled: false } },
-      },
-    });
+      }),
+    );
 
     const result = createFeishuReplyDispatcher({
       cfg: {} as never,
@@ -1453,6 +1395,51 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     expectClosed(expected);
   });
 
+  it("strips narration prose from the finalized card when an answer follows", async () => {
+    resolveFeishuAccountMock.mockReturnValue(createReplyAccount("card", "partial", "feishu"));
+    const { result, options } = createDispatcherHarness();
+    await options.onReplyStart?.();
+    result.replyOptions.onPartialReply?.({ text: "Reading the config now." });
+    result.replyOptions.onAssistantMessageStart?.();
+    result.replyOptions.onPartialReply?.({ text: "The answer is 42." });
+    await options.deliver({ text: "The answer is 42." }, { kind: "final" });
+    await options.onIdle?.();
+    expect(streamingInstances).toHaveLength(1);
+    expect(stream(0).closeWithResult).toHaveBeenCalledTimes(1);
+    expectClosed("The answer is 42.");
+  });
+
+  it("keeps narration-only previews on idle close without an answer", async () => {
+    resolveFeishuAccountMock.mockReturnValue(createReplyAccount("card", "partial", "feishu"));
+    const { result, options } = createDispatcherHarness();
+    await options.onReplyStart?.();
+    result.replyOptions.onPartialReply?.({ text: "Only narration, no answer yet." });
+    result.replyOptions.onAssistantMessageStart?.();
+    await options.onIdle?.();
+    expect(streamingInstances).toHaveLength(1);
+    expect(stream(0).closeWithResult).toHaveBeenCalledTimes(1);
+    expectClosed("Only narration, no answer yet.");
+  });
+
+  it("delivers the answer only when an over-limit final falls back to standalone delivery", async () => {
+    resolveFeishuAccountMock.mockReturnValue(createReplyAccount("card", "partial", "feishu"));
+    getFeishuRuntimeMock().channel.text.resolveTextChunkLimit.mockReturnValue(200);
+    const longAnswer = "Answer part.\n".repeat(30);
+    const { result, options } = createDispatcherHarness();
+    await options.onReplyStart?.();
+    result.replyOptions.onPartialReply?.({ text: "Narration prose." });
+    result.replyOptions.onAssistantMessageStart?.();
+    result.replyOptions.onPartialReply?.({ text: "Answer part." });
+    await options.deliver({ text: longAnswer }, { kind: "final" });
+    await options.onIdle?.();
+    const deliveredTexts = [
+      ...sendStructuredCardFeishuMock.mock.calls.map((call) => JSON.stringify(call)),
+      ...sendMessageFeishuMock.mock.calls.map((call) => JSON.stringify(call)),
+    ].join("\n");
+    expect(deliveredTexts).toContain("Answer part.");
+    expect(deliveredTexts).not.toContain("Narration prose.");
+  });
+
   it("keeps an over-limit block in its active streaming card", async () => {
     useStreamingBlockAccount();
     const text = makeTableText(6);
@@ -1531,6 +1518,38 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       mediaUrl: "https://example.com/reply.mp3",
       audioAsVoice: true,
     });
+  });
+
+  it("sends narration-free fallback text when a voice media final fails to upload", async () => {
+    resolveFeishuAccountMock.mockReturnValue(createReplyAccount("card", "partial", "feishu"));
+    sendMediaFeishuMock.mockRejectedValueOnce(new Error("voice upload failed"));
+    const { result, options } = createDispatcherHarness();
+    await options.onReplyStart?.();
+    result.replyOptions.onPartialReply?.({ text: "Narration prose." });
+    result.replyOptions.onAssistantMessageStart?.();
+    result.replyOptions.onPartialReply?.({ text: "The answer is 42." });
+    await options.deliver(
+      {
+        text: "The answer is 42.",
+        mediaUrl: "https://example.com/reply.mp3",
+        audioAsVoice: true,
+      },
+      { kind: "final" },
+    );
+    await options.onIdle?.();
+    expect(streamingInstances).toHaveLength(1);
+    expect(stream(0).discard).toHaveBeenCalledTimes(1);
+    // The voice fallback owns the answer text; the narration prefix stays in
+    // the discarded card's process panel (patch 0006 v3).
+    expectSend(sendMessageFeishuMock, {
+      text: "The answer is 42.\n\n📎 https://example.com/reply.mp3",
+    });
+    const deliveredTexts = [
+      ...sendStructuredCardFeishuMock.mock.calls.map((call) => JSON.stringify(call)),
+      ...sendMessageFeishuMock.mock.calls.map((call) => JSON.stringify(call)),
+    ].join("\n");
+    expect(deliveredTexts).toContain("The answer is 42.");
+    expect(deliveredTexts).not.toContain("Narration prose.");
   });
 
   it("preserves the no-provider-dispatch marker for media preparation failures", async () => {
@@ -1773,6 +1792,36 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       await options.deliver({ text }, { kind: "final" });
       await options.onIdle?.();
       expect(send).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["card", "post"] as const)(
+    "recovers a rejected close with the answer only through a %s",
+    async (mode) => {
+      resolveFeishuAccountMock.mockReturnValue(createReplyAccount("card", "partial", "feishu"));
+      const answer = mode === "card" ? "The answer is 42." : makeTableText(6);
+      const send = mode === "card" ? sendStructuredCardFeishuMock : sendMessageFeishuMock;
+      const messageId = mode === "card" ? "om-static" : "om-post";
+      send.mockResolvedValueOnce({ messageId });
+      const { result, options } = createDispatcherHarness();
+      await options.onReplyStart?.();
+      result.replyOptions.onPartialReply?.({ text: "Narration prose." });
+      result.replyOptions.onAssistantMessageStart?.();
+      result.replyOptions.onPartialReply?.({ text: answer });
+      const delivery = await options.deliver({ text: answer }, { kind: "final" });
+      stream(0).closeWithResult.mockRejectedValueOnce(
+        new FeishuStreamingFinalizationError(new Error("final update failed"), {
+          visibleReplySent: false,
+          messageId: "om-empty-stream",
+        }),
+      );
+      await expect(options.onIdle?.()).rejects.toThrow("final update failed");
+      await expect(delivery?.finalization).rejects.toMatchObject(
+        partialDelivery(answer, [messageId]),
+      );
+      // The rejected-final recovery re-delivers the close text (answer only);
+      // the narration prefix stays owned by the process panel (patch 0006 v3).
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: answer }));
     },
   );
 
@@ -2108,25 +2157,21 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     await options.onIdle?.();
 
     const updateTexts = streamingUpdateTexts();
-    expect(updateTexts.join("\n")).toContain("🔎 Web Search");
-    expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledWith("final answer", {
-      note: "Agent: agent",
-    });
+    expect(updateTexts.join("\n")).not.toContain("🔎 Web Search");
+    // Tool rows live in the append-only process log element (patch 0006 v2);
+    // the answer element and the final text stay clean of them.
+    expect(processLogTexts().join("\n")).toContain("🔎 Web Search");
+    expectClosed("final answer");
   });
 
   it("shows raw command detail in streaming card tool status", async () => {
-    resolveFeishuAccountMock.mockReturnValue({
-      accountId: "main",
-      appId: "app_id",
-      appSecret: "app_secret",
-      domain: "feishu",
-      config: {
-        renderMode: "card",
-        // Raw command text requires the documented commandText opt-in; the
-        // default "status" mode renders the tool label only.
+    // Raw command text requires the documented commandText opt-in; the
+    // default "status" mode renders the tool label only.
+    resolveFeishuAccountMock.mockReturnValue(
+      createReplyAccount("card", "partial", "feishu", {
         streaming: { mode: "partial", progress: { commandText: "raw" } },
-      },
-    });
+      }),
+    );
 
     const { result, options } = createDispatcherHarness({
       runtime: createRuntimeLogger(),
@@ -2144,8 +2189,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     result.replyOptions.onPartialReply?.({ text: "final answer" });
     await options.onIdle?.();
 
-    const updateTexts = streamingUpdateTexts();
-    expect(updateTexts.join("\n")).toContain("🛠️ run tests, `pnpm test -- --watch=false`");
+    expect(processLogTexts().join("\n")).toContain("🛠️ run tests, `pnpm test -- --watch=false`");
   });
 
   it("keeps prepared quiet waits out of streaming card status", async () => {
@@ -2169,6 +2213,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
 
     const updateTexts = streamingUpdateTexts();
     expect(updateTexts.join("\n")).not.toContain("Process");
+    expect(processLogTexts().join("\n")).not.toContain("Process");
     expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledWith("final answer", {
       note: "Agent: agent",
     });
@@ -2311,11 +2356,17 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       await options.onIdle?.();
       const updates = streamingUpdateTexts().join("\n");
       if (visible) {
-        expect(updates).toContain(label);
+        // Visible tool rows land in the append-only process log element
+        // (patch 0006 v2), never in the answer text.
+        expect(updates).not.toContain(label);
+        expect(processLogTexts().join("\n")).toContain(label);
+        expectClosed("final answer");
       } else {
         expect(updates).not.toContain(label);
+        // Invisible tool rows never enter the log either.
+        expect(processLogTexts().join("\n")).not.toContain(label);
+        expectClosed("final answer");
       }
-      expectClosed("final answer");
     },
   );
 
@@ -2449,7 +2500,10 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     await options.onIdle?.();
     await expect(result.ensureNoVisibleReplyFallback("zero-final-count")).resolves.toBe(true);
     expect(streamingInstances).toHaveLength(1);
+    // No visible answer: the log element carries the tool row, but it does not
+    // count as delivered content (patch 0006 v2).
     expectClosed("");
+    expect(processLogTexts(0).join("\n").length).toBeGreaterThan(0);
     expect(sendMessageFeishuMock).toHaveBeenCalledTimes(1);
   });
 
@@ -2538,43 +2592,33 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       expect(streamingInstances).toHaveLength(1);
     });
 
-    it("keeps rolling progress lines above the final answer behind a divider with streaming.finalize append", async () => {
-      resolveFeishuAccountMock.mockReturnValue({
-        accountId: "main",
-        appId: "app_id",
-        appSecret: "app_secret",
-        domain: "feishu",
-        config: {
-          renderMode: "card",
+    it("carries process history in the log element with streaming.finalize append", async () => {
+      resolveFeishuAccountMock.mockReturnValue(
+        createReplyAccount("card", "partial", "feishu", {
           streaming: { mode: "partial", finalize: "append" },
-        },
-      });
+        }),
+      );
       const { result, options } = createDispatcherHarness();
       await result.replyOptions.onToolStart?.({ name: "web_search", phase: "start" });
       const session = requireStreamingInstance(0);
-      await vi.waitFor(() => expect(session.update).toHaveBeenCalled());
+      await vi.waitFor(() => expect(session.appendProcessLog).toHaveBeenCalled());
 
       const delivery = await options.deliver({ text: "Final answer" }, { kind: "final" });
       await options.onIdle?.();
       await delivery?.finalization;
+      // The append-only log element carries the history (patch 0006 v2): the
+      // final text stays clean — inline retention above the answer is retired.
       const closedWith = String(session.closeWithResult.mock.calls[0]?.[0]);
-      expect(closedWith).toContain("Final answer");
-      const answerAt = closedWith.indexOf("Final answer");
-      expect(answerAt).toBeGreaterThan(0);
-      expect(closedWith.slice(0, answerAt)).toContain("· · ·");
+      expect(closedWith).toBe("Final answer");
+      expect(processLogTexts(0).join("\n")).toContain("Web Search");
     });
 
     it("sends no-visible-reply fallback after an empty card close in append mode", async () => {
-      resolveFeishuAccountMock.mockReturnValue({
-        accountId: "main",
-        appId: "app_id",
-        appSecret: "app_secret",
-        domain: "feishu",
-        config: {
-          renderMode: "card",
+      resolveFeishuAccountMock.mockReturnValue(
+        createReplyAccount("card", "partial", "feishu", {
           streaming: { mode: "partial", finalize: "append" },
-        },
-      });
+        }),
+      );
       const runtime = createRuntimeLogger();
       const { result, options } = createDispatcherHarness({ runtime });
 
@@ -2584,10 +2628,10 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       await options.onIdle?.();
       await expect(result.ensureNoVisibleReplyFallback("zero-final-count")).resolves.toBe(true);
 
-      // Retained progress must not count as delivered content without an answer.
-      expect(requireStreamingInstance(0).closeWithResult).toHaveBeenCalledWith("", {
-        note: "Agent: agent",
-      });
+      // The process log element must not count as delivered content without an
+      // answer either (patch 0006 v2): the no-visible-reply fallback still fires.
+      expectClosed("");
+      expect(processLogTexts(0).join("\n").length).toBeGreaterThan(0);
       expect(sendMessageFeishuMock).toHaveBeenCalledTimes(1);
     });
 
@@ -2600,10 +2644,10 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       streamingStartBackoffUntilByAccount.delete("main");
       await result.replyOptions.onToolStart?.({ name: "bash", phase: "start" });
       const session = requireStreamingInstance(0);
-      await vi.waitFor(() => expect(session.update).toHaveBeenCalled());
+      await vi.waitFor(() => expect(session.appendProcessLog).toHaveBeenCalled());
     });
 
-    it("starts the streaming card on the first tool event and rolls progress text", async () => {
+    it("starts the streaming card on the first tool event and rolls the process log", async () => {
       const { result } = createDispatcherHarness();
       await result.replyOptions.onToolStart?.({
         name: "web_search",
@@ -2612,11 +2656,11 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       });
       const session = requireStreamingInstance(0);
       expect(session.start).toHaveBeenCalledTimes(1);
-      await vi.waitFor(() => expect(session.update).toHaveBeenCalled());
-      expect(String(session.update.mock.calls[0]?.[0]).length).toBeGreaterThan(0);
+      await vi.waitFor(() => expect(session.appendProcessLog).toHaveBeenCalled());
+      expect(String(session.appendProcessLog.mock.calls[0]?.[0]).length).toBeGreaterThan(0);
 
       await result.replyOptions.onToolStart?.({ name: "bash", phase: "start" });
-      await vi.waitFor(() => expect(session.update.mock.calls.length).toBeGreaterThan(1));
+      await vi.waitFor(() => expect(session.appendProcessLog.mock.calls.length).toBeGreaterThan(1));
     });
 
     it("keeps command-bearing tool lines label-only under the default commandText mode", async () => {
@@ -2627,10 +2671,10 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
         args: { command: "git status" },
       });
       const session = requireStreamingInstance(0);
-      await vi.waitFor(() => expect(session.update).toHaveBeenCalled());
-      // Default "status" mode: the rolling line identifies the tool without
+      await vi.waitFor(() => expect(session.appendProcessLog).toHaveBeenCalled());
+      // Default "status" mode: the log row identifies the tool without
       // echoing command-derived detail.
-      expect(String(session.update.mock.calls.at(-1)?.[0])).not.toContain("git");
+      expect(processLogTexts(0).join("\n")).not.toContain("git");
     });
 
     it("shows command detail on exec lines when streaming.progress.commandText is raw", async () => {
@@ -2646,12 +2690,10 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
         args: { command: "git status" },
       });
       const session = requireStreamingInstance(0);
-      await vi.waitFor(() => expect(session.update).toHaveBeenCalled());
+      await vi.waitFor(() => expect(session.appendProcessLog).toHaveBeenCalled());
       // "raw" unlocks the command-derived meta; the explain detail mode (default)
       // renders the redacted shell summarizer output for `git status`.
-      await vi.waitFor(() =>
-        expect(String(session.update.mock.calls.at(-1)?.[0])).toContain("check git status"),
-      );
+      await vi.waitFor(() => expect(processLogTexts(0).join("\n")).toContain("check git status"));
     });
 
     it("renders plan checklist steps on the streaming card", async () => {
@@ -2666,9 +2708,9 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       });
       const session = requireStreamingInstance(0);
       await vi.waitFor(() => {
-        const latest = String(session.update.mock.calls.at(-1)?.[0]);
-        expect(latest).toContain("Search docs");
-        expect(latest).toContain("Write patch");
+        const logText = processLogTexts(0).join("\n");
+        expect(logText).toContain("Search docs");
+        expect(logText).toContain("Write patch");
       });
     });
 
@@ -2683,28 +2725,29 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
         const { result, options } = createDispatcherHarness();
         await result.replyOptions.onToolStart?.({ name: "bash", phase: "start" });
         const session = requireStreamingInstance(0);
-        await vi.waitFor(() => expect(session.update).toHaveBeenCalled());
+        await vi.waitFor(() => expect(session.appendProcessLog).toHaveBeenCalled());
 
         const delivery = await options.deliver({ text: "Final answer" }, { kind: "final" });
         await options.onIdle?.();
         await delivery?.finalization;
         expect(session.closeWithResult).toHaveBeenCalledWith("Final answer", expect.anything());
-        const updatesAtFinal = session.update.mock.calls.length;
+        const appendsAtFinal = session.appendProcessLog.mock.calls.length;
 
         await result.replyOptions.onToolStart?.({ name: "bash", phase: "start" });
         await vi.advanceTimersByTimeAsync(1_000);
         expect(streamingInstances).toHaveLength(1);
-        expect(session.update.mock.calls.length).toBe(updatesAtFinal);
+        // The finalized turn is inert: no further log appends or content writes.
+        expect(session.appendProcessLog.mock.calls.length).toBe(appendsAtFinal);
       } finally {
         vi.useRealTimers();
       }
     });
 
-    it("renders narration preambles as commentary lines in the rolling draft", async () => {
+    it("renders narration preambles as commentary rows in the process log", async () => {
       const { result } = createDispatcherHarness();
       await result.replyOptions.onToolStart?.({ name: "bash", phase: "start" });
       const session = requireStreamingInstance(0);
-      await vi.waitFor(() => expect(session.update).toHaveBeenCalled());
+      await vi.waitFor(() => expect(session.appendProcessLog).toHaveBeenCalled());
 
       await result.replyOptions.onItemEvent?.({
         kind: "preamble",
@@ -2713,30 +2756,32 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
         progressText: "先检索国内方案，再查海外主流平台",
       });
       await vi.waitFor(() => {
-        const latest = String(session.update.mock.calls.at(-1)?.[0]);
-        expect(latest).toContain("💬");
-        expect(latest).toContain("先检索国内方案");
+        expect(processLogTexts(0).join("\n")).toContain("先检索国内方案");
       });
 
-      // Growing narration for the same item updates the line in place.
+      // Cumulative narration growth extends the last log row in place.
       await result.replyOptions.onItemEvent?.({
         kind: "preamble",
         itemId: "item-1",
         phase: "end",
-        progressText: "资料齐了，开始整理对比",
+        progressText: "先检索国内方案，再查海外主流平台。资料齐了，开始整理对比",
       });
       await vi.waitFor(() => {
-        const latest = String(session.update.mock.calls.at(-1)?.[0]);
-        expect(latest).toContain("资料齐了");
+        expect(processLogTexts(0).join("\n")).toContain("资料齐了");
       });
     });
 
     it("does not cache a publication the transport rejected and retries the identical draft", async () => {
       const { result } = createDispatcherHarness();
-      await result.replyOptions.onToolStart?.({ name: "bash", phase: "start" });
+      // Give the card content so the compositor's publication has a transport
+      // observation to settle against (patch 0006 v2: the process lane writes
+      // to its own element fire-and-forget; acceptance stays with the content
+      // write that carries the answer text).
+      result.replyOptions.onPartialReply?.({ text: "answer preview" });
       const session = requireStreamingInstance(0);
       await vi.waitFor(() => expect(session.update).toHaveBeenCalled());
 
+      await result.replyOptions.onToolStart?.({ name: "bash", phase: "start" });
       session.registerContentObserver.mockResolvedValueOnce(false);
       const acknowledged = await result.replyOptions.onToolStart?.({
         name: "web_search",
@@ -2759,7 +2804,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
 
     it("coalesces rapid publications without serializing confirmation waits", async () => {
       const { result } = createDispatcherHarness();
-      await result.replyOptions.onToolStart?.({ name: "bash", phase: "start" });
+      result.replyOptions.onPartialReply?.({ text: "answer preview" });
       const session = requireStreamingInstance(0);
       await vi.waitFor(() => expect(session.update).toHaveBeenCalled());
       session.update.mockClear();
@@ -2784,7 +2829,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       const { result } = createDispatcherHarness();
       await result.replyOptions.onToolStart?.({ name: "bash", phase: "start" });
       const session = requireStreamingInstance(0);
-      await vi.waitFor(() => expect(session.update).toHaveBeenCalled());
+      await vi.waitFor(() => expect(session.appendProcessLog).toHaveBeenCalled());
 
       const handled = await result.replyOptions.onItemEvent?.({
         kind: "preamble",
@@ -2796,12 +2841,14 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       for (const call of session.update.mock.calls) {
         expect(String(call?.[0])).not.toContain("NO_REPLY");
       }
+      expect(processLogTexts(0).join("\n")).not.toContain("NO_REPLY");
     });
 
-    it("retracts a commentary line when its preamble item updates empty", async () => {
-      const { result } = createDispatcherHarness();
+    it("keeps retracted narration in the append-only process log", async () => {
+      const { result, options } = createDispatcherHarness();
       await result.replyOptions.onToolStart?.({ name: "bash", phase: "start" });
       const session = requireStreamingInstance(0);
+      await vi.waitFor(() => expect(session.appendProcessLog).toHaveBeenCalled());
 
       await result.replyOptions.onItemEvent?.({
         kind: "preamble",
@@ -2810,20 +2857,20 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
         progressText: "temporary narration",
       });
       await vi.waitFor(() => {
-        expect(String(session.update.mock.calls.at(-1)?.[0])).toContain("temporary narration");
+        expect(processLogTexts(0).join("\n")).toContain("temporary narration");
       });
 
+      // The compositor retracts the line from its window; the log lane is
+      // append-only and keeps the narrated text (accepted edge, documented in
+      // the builder) — the record shows what was said, retraction or not.
       await result.replyOptions.onItemEvent?.({
         kind: "preamble",
         itemId: "item-retract",
         phase: "update",
         progressText: "",
       });
-      await vi.waitFor(() => {
-        const latest = String(session.update.mock.calls.at(-1)?.[0]);
-        expect(latest).not.toContain("temporary narration");
-        expect(latest).toContain("🛠️ Bash");
-      });
+      await options.onIdle?.();
+      expect(processLogTexts(0).join("\n")).toContain("temporary narration");
     });
 
     it("keeps progress callbacks unregistered while modifying hooks are active", async () => {

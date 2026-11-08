@@ -340,6 +340,32 @@ function createRecordingCardKitFetch(): typeof fetch {
         record(parseJsonRecord(init?.body), { code: 0 });
         return jsonResponse({ code: 0, msg: "ok" });
       }
+      // Patch 0006 v2: the process-lane element writes and the terminal panel
+      // fold (collapse with the entry count / removal when empty). Patch 0006
+      // v6 takes the panel's hr divider along on removal.
+      if (wirePath.endsWith("/elements/process_log_content/content")) {
+        record(parseJsonRecord(init?.body), { code: 0 });
+        return jsonResponse({ code: 0, msg: "ok" });
+      }
+      if (wirePath.endsWith("/elements/process_log_divider")) {
+        const body = parseJsonRecord(init?.body);
+        record({ sequence: body.sequence, uuid: body.uuid }, { code: 0 });
+        return jsonResponse({ code: 0, msg: "ok" });
+      }
+      if (wirePath.endsWith("/elements/process_log")) {
+        const body = parseJsonRecord(init?.body);
+        record(
+          method === "PATCH"
+            ? {
+                partial: parseJsonRecord(body.partial_element),
+                sequence: body.sequence,
+                uuid: body.uuid,
+              }
+            : { sequence: body.sequence, uuid: body.uuid },
+          { code: 0 },
+        );
+        return jsonResponse({ code: 0, msg: "ok" });
+      }
       if (wirePath.endsWith("/settings")) {
         const body = parseJsonRecord(init?.body);
         record(
@@ -560,9 +586,9 @@ describe("feishu delivery trace goldens", () => {
     { preFinal: true, withPartials: true },
     { preFinal: false, withPartials: true },
   ])(
-    "retains pre-tool prose in CardKit updates and close with preFinal=$preFinal, partials=$withPartials",
+    "keeps pre-tool prose in CardKit streaming updates and closes with the answer only (preFinal=$preFinal, partials=$withPartials)",
     async ({ preFinal, withPartials }) => {
-      const expected = "I will check.\n\nFound the answer.";
+      const expectedClose = "Found the answer.";
       const events = await runDeliveryTraceScenario({
         scenario: { name: "feishu-pre-tool-text", steps: [{ kind: "final" }] },
         setup: (recorder) => {
@@ -600,22 +626,28 @@ describe("feishu delivery trace goldens", () => {
             settings: {
               config: {
                 streaming_mode: false,
-                summary: { content: "I will check.  Found the answer." },
+                // Patch 0006 v3: the accepted final is the answer only — the
+                // narration prose lives on in the process-log panel.
+                summary: { content: expectedClose },
               },
             },
           },
         },
       });
-      const lastWrite = events.findLast((event) =>
+      const contentWrites = events.filter((event) =>
         /\/elements\/content(?:\/content)?$/.test(event.kind),
       );
+      const lastWrite = contentWrites.at(-1);
+      const streamingWrites = contentWrites.slice(0, -1);
+      // The close write carries the answer only; the narration prose was
+      // streamed to the card body during the turn (exact coalescing varies
+      // with the flush gate, so assert on presence, not the last write).
       expect(lastWrite).toMatchObject({
-        data: {
-          payload: lastWrite?.kind.endsWith("/content/content")
-            ? { content: expected }
-            : { element: { content: expected } },
-        },
+        data: { payload: { content: expectedClose } },
       });
+      expect(
+        streamingWrites.some((write) => JSON.stringify(write.data).includes("I will check.")),
+      ).toBe(true);
       expect(events.filter((event) => event.kind === "im.message.create")).toHaveLength(1);
     },
   );

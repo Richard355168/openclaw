@@ -351,6 +351,11 @@ describe("FeishuStreamingSession", () => {
       expect(requests.map(({ path }) => path)).toEqual([
         "/open-apis/cardkit/v1/cards/card_accepted/elements/content/content",
         "/open-apis/cardkit/v1/cards/card_accepted/settings",
+        // Patch 0006 v2: the process panel ships with the card and is removed
+        // at close when the turn produced no log rows; patch 0006 v6 takes
+        // the panel's hr divider along.
+        "/open-apis/cardkit/v1/cards/card_accepted/elements/process_log",
+        "/open-apis/cardkit/v1/cards/card_accepted/elements/process_log_divider",
       ]);
       expect(session.isActive()).toBe(false);
     },
@@ -370,6 +375,8 @@ describe("FeishuStreamingSession", () => {
       "/open-apis/cardkit/v1/cards/card_accepted/elements/content/content",
       "/open-apis/cardkit/v1/cards/card_accepted/elements/content/content",
       "/open-apis/cardkit/v1/cards/card_accepted/settings",
+      "/open-apis/cardkit/v1/cards/card_accepted/elements/process_log",
+      "/open-apis/cardkit/v1/cards/card_accepted/elements/process_log_divider",
     ]);
     expect(requests[1]?.body).toMatchObject({ content: "" });
     expect(session.isActive()).toBe(false);
