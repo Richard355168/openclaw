@@ -15,23 +15,6 @@ import {
   type FeishuReplyDeliveryResult,
 } from "./reply-delivery-result.js";
 import type { CardHeaderConfig } from "./send.js";
-/**
- * Send-mode classifier for the streaming card message. Inlined here: the
- * standalone streaming-card-send-mode.ts module was removed on main while
- * this branch was in review.
- */
-function resolveStreamingCardSendMode(options?: {
-  replyToMessageId?: string;
-  rootId?: string;
-}): "reply" | "root_create" | "create" {
-  if (options?.replyToMessageId) {
-    return "reply";
-  }
-  if (options?.rootId) {
-    return "root_create";
-  }
-  return "create";
-}
 import {
   assertSuccessfulCardKitResponse,
   cancelUnreadResponseBody,
@@ -53,6 +36,12 @@ type CardState = {
   currentText: string;
   sentText: string;
   hasNote: boolean;
+  /** Append-only process log (patch 0006 v2): sent vs desired text. */
+  processLogSent: string;
+  processLogDesired: string;
+  processLogEntries: number;
+  /** Any escalated failure row — a single-row log still keeps its panel. */
+  processLogHasFailure: boolean;
 };
 
 type FeishuStreamingCloseResult = {
@@ -79,18 +68,12 @@ export class FeishuStreamingFinalizationError extends Error {
 }
 
 /** Options for customising the initial streaming card appearance. */
-type StreamingCardOptions = {
-  /** Optional header with title and color template. */
-  header?: CardHeaderConfig;
-  /** Optional grey note footer text. */
-  note?: string;
-};
-
 type StreamingStartOptions = {
   replyToMessageId?: string;
   replyInThread?: boolean;
   rootId?: string;
   header?: CardHeaderConfig;
+  note?: string;
 };
 
 // CardKit closes streaming_mode ten minutes after it was last enabled, then rejects
@@ -115,6 +98,12 @@ export class FeishuStreamingSession {
   private updateThrottleMs = STREAMING_UPDATE_THROTTLE_MS;
   private fetchImpl?: FeishuStreamingFetch;
   private lookupFn?: LookupFn;
+  private deps?: FeishuStreamingDeps;
+  // Process-log throttle state (patch 0006 v2): the timer mirrors the answer
+  // channel's flushTimer; the desired text itself lives on the card state
+  // (processLogDesired) and the write clock is shared with the answer channel
+  // (lastUpdateTime — every card element PUT consumes one single-card budget).
+  private processLogTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     client: Client,
@@ -125,14 +114,13 @@ export class FeishuStreamingSession {
     this.client = client;
     this.creds = creds;
     this.log = log;
-    this.fetchImpl = deps?.fetchImpl;
-    this.lookupFn = deps?.lookupFn;
+    this.deps = deps;
   }
 
   private async requestCardKit<T>(
     path: string,
     operation: string,
-    method: "POST" | "PUT" | "PATCH",
+    method: "POST" | "PUT" | "PATCH" | "DELETE",
     body: () => Record<string, unknown>,
     readResponse: (response: Response, auditContext: string) => Promise<T>,
     token?: string,
@@ -144,11 +132,7 @@ export class FeishuStreamingSession {
         method,
         headers: {
           Authorization: `Bearer ${
-            token ??
-            (await getToken(this.creds, {
-              fetchImpl: this.fetchImpl,
-              lookupFn: this.lookupFn,
-            }))
+            token ?? (await getToken(this.creds, { ...(this.deps ?? {}) }))
           }`,
           "Content-Type":
             method === "PATCH" ? "application/json; charset=utf-8" : "application/json",
@@ -157,8 +141,8 @@ export class FeishuStreamingSession {
         // Token renewal can await; read the current sequence only at dispatch.
         body: JSON.stringify(body()),
       },
-      fetchImpl: this.fetchImpl,
-      lookupFn: this.lookupFn,
+      fetchImpl: this.deps?.fetchImpl,
+      lookupFn: this.deps?.lookupFn,
       policy: { allowedHostnames: resolveAllowedHostnames(this.creds.domain) },
       auditContext,
       timeoutMs: this.creds.httpTimeoutMs ?? FEISHU_HTTP_TIMEOUT_MS,
@@ -173,7 +157,7 @@ export class FeishuStreamingSession {
   async start(
     receiveId: string,
     receiveIdType: "open_id" | "user_id" | "union_id" | "email" | "chat_id" = "chat_id",
-    options?: StreamingCardOptions & StreamingStartOptions,
+    options?: StreamingStartOptions,
   ): Promise<void> {
     if (this.state) {
       return;
@@ -181,6 +165,41 @@ export class FeishuStreamingSession {
 
     const elements: Record<string, unknown>[] = [
       { tag: "markdown", content: "", element_id: "content" },
+      // Process lane (patch 0006 v2): append-only log rows inside a
+      // collapsible panel. Content PUTs inside the panel stream fine
+      // (QwenPaw #7570, live-verified), and prefix-only growth lets CardKit
+      // type just the new rows instead of re-rendering on every tool call.
+      // expanded defaults to FALSE and must stay false in the card JSON:
+      // every content PUT produces a new card data version and the client
+      // re-render resets the panel to the JSON value (live-verified 2026-11-07
+      // — a user-collapsed panel popped back open with expanded: true). A
+      // false baseline keeps the panel collapsed across updates; a manually
+      // expanded view folds back on the next write (platform limitation —
+      // the panel exposes no interaction callback to track user state).
+      // The divider owns an element id so the terminal fold can remove it
+      // together with the panel — a lone hr would survive on the closed card.
+      { tag: "hr", element_id: "process_log_divider" },
+      {
+        tag: "collapsible_panel",
+        element_id: "process_log",
+        expanded: false,
+        header: {
+          title: { tag: "plain_text", content: "执行过程" },
+          vertical_align: "center",
+          icon: {
+            tag: "standard_icon",
+            token: "down-small-ccm_outlined",
+            color: "",
+            size: "16px 16px",
+          },
+          icon_position: "right",
+          icon_expanded_angle: -180,
+        },
+        border: { color: "grey", corner_radius: "5px" },
+        vertical_spacing: "8px",
+        padding: "8px 8px 8px 8px",
+        elements: [{ tag: "markdown", content: "", element_id: "process_log_content" }],
+      },
     ];
     if (options?.note) {
       elements.push({ tag: "hr" });
@@ -229,42 +248,30 @@ export class FeishuStreamingSession {
     const cardId = createData.data.card_id;
     const cardContent = JSON.stringify({ type: "card", data: { card_id: cardId } });
 
-    // Prefer message.reply when we have a reply target — reply_in_thread
-    // reliably routes streaming cards into Feishu topics, whereas
-    // message.create with root_id may silently ignore root_id for card
-    // references (card_id format).
-    let sendRes;
     const sendOptions = options ?? {};
-    const sendMode = resolveStreamingCardSendMode(sendOptions);
-    if (sendMode === "reply") {
-      sendRes = await requestFeishuApi(
-        () =>
-          this.client.im.message.reply({
-            path: { message_id: sendOptions.replyToMessageId! },
-            data: {
-              msg_type: "interactive",
-              content: cardContent,
-              ...(sendOptions.replyInThread ? { reply_in_thread: true } : {}),
-            },
-          }),
-        "Send card failed",
-      );
-    } else {
-      sendRes = await requestFeishuApi(
-        () =>
-          this.client.im.message.create({
-            params: { receive_id_type: receiveIdType },
-            data: {
-              receive_id: receiveId,
-              msg_type: "interactive",
-              content: cardContent,
-              // The SDK omits root_id from its types, but Feishu accepts it at runtime.
-              ...(sendMode === "root_create" ? { root_id: sendOptions.rootId } : {}),
-            },
-          }),
-        "Send card failed",
-      );
-    }
+    const sendRes = await requestFeishuApi(
+      () =>
+        sendOptions.replyToMessageId
+          ? this.client.im.message.reply({
+              path: { message_id: sendOptions.replyToMessageId },
+              data: {
+                msg_type: "interactive",
+                content: cardContent,
+                ...(sendOptions.replyInThread ? { reply_in_thread: true } : {}),
+              },
+            })
+          : this.client.im.message.create({
+              params: { receive_id_type: receiveIdType },
+              data: {
+                receive_id: receiveId,
+                msg_type: "interactive",
+                content: cardContent,
+                // The SDK omits root_id from its types, but Feishu accepts it at runtime.
+                ...(sendOptions.rootId ? { root_id: sendOptions.rootId } : {}),
+              },
+            }),
+      "Send card failed",
+    );
     if (sendRes.code !== 0) {
       throw new Error(`Send card failed: ${sendRes.msg}`);
     }
@@ -277,6 +284,10 @@ export class FeishuStreamingSession {
       currentText: "",
       sentText: "",
       hasNote: Boolean(options?.note),
+      processLogSent: "",
+      processLogDesired: "",
+      processLogEntries: 0,
+      processLogHasFailure: false,
     };
     this.log?.(`Started streaming: cardId=${cardId}${messageId ? `, messageId=${messageId}` : ""}`);
   }
@@ -489,6 +500,7 @@ export class FeishuStreamingSession {
     }
     this.closed = true;
     this.clearFlushTimer();
+    this.settleProcessLogPending();
     await this.queue;
     this.settleContentFlushWaiters();
 
@@ -523,7 +535,6 @@ export class FeishuStreamingSession {
       await this.updateNoteContent(options.note);
     }
 
-    // Close streaming mode
     // A rejected final write must not advertise content that CardKit never accepted.
     const acceptedText = this.state.sentText;
     let closeError: unknown;
@@ -537,6 +548,20 @@ export class FeishuStreamingSession {
       closeError = error;
       this.log?.(`Close failed: ${String(error)}`);
     }
+
+    // Terminal fold (patch 0006 v2): collapse the process panel after close,
+    // or remove it when the turn produced no process rows. Element PATCH
+    // post-close is the QwenPaw #7570 verified path; a failure here is logged
+    // only — the streamed card (answer + panel) stays fully usable either way.
+    if (closeError === undefined) {
+      // Awaited (not fire-and-forget): the fold is part of the close contract
+      // the tests assert on, and keeping it synchronous preserves the
+      // "close returned ⇒ panel already folded" invariant.
+      await this.finalizeProcessPanel().catch((error: unknown) =>
+        this.log?.(`Process panel finalize skipped: ${String(error)}`),
+      );
+    }
+
     const finalState = this.state;
     this.state = null;
     this.pendingText = null;
@@ -565,6 +590,171 @@ export class FeishuStreamingSession {
   }
 
   async discard(): Promise<FeishuReplyDeliveryResult> {
+  // Enqueues one append of the process log element. The text is the FULL
+  // cumulative log and only ever grows (append-only builder), so CardKit's
+  // typewriter renders just the new suffix; a rejected write keeps the text
+  // desired so the next append retries it. Bursts coalesce: the queued task
+  // always writes the latest desired text.
+  async appendProcessLog(text: string, entryCount: number, hasFailure = false): Promise<void> {
+    if (!this.state || this.closed || !text) {
+      return;
+    }
+    if (text === this.state.processLogSent) {
+      return;
+    }
+    this.state.processLogDesired = text;
+    this.state.processLogEntries = Math.max(this.state.processLogEntries, entryCount);
+    this.state.processLogHasFailure = hasFailure;
+    // Same throttle cadence as the answer channel: narration deltas stream
+    // per publish, so without this gate the log PUT rate tracks the publish
+    // rate (a narration burst crosses the 10 req/s single-card budget and a
+    // 429 would turn every later event into one rejected retry).
+    this.scheduleProcessLogFlush();
+  }
+
+  private scheduleProcessLogFlush(): void {
+    if (this.processLogTimer || this.closed) {
+      return;
+    }
+    // Shared write clock with the answer channel: an answer PUT and a log PUT
+    // draw on the same single-card rate budget, so both gates read one clock
+    // and a burst on either side defers the other by at most one window.
+    const delayMs = Math.max(0, this.updateThrottleMs - (Date.now() - this.lastUpdateTime));
+    this.processLogTimer = setTimeout(() => {
+      this.processLogTimer = null;
+      if (this.closed) {
+        return;
+      }
+      this.lastUpdateTime = Date.now();
+      this.enqueueProcessLogWrite("process-log");
+    }, delayMs);
+  }
+
+  // One queued process-log PUT against the confirmed Sent text. Failures keep
+  // the text desired: the next append retries it (and the 300309 self-heal on
+  // the answer channel re-arms the window).
+  private enqueueProcessLogWrite(operation: string, options?: { allowClosed?: boolean }): void {
+    this.queue = this.queue.then(async () => {
+      // The settle variant runs inside closeWithResult/discard after the
+      // `closed` flag is already set: streaming mode is still on, so this
+      // write is legal (the flag gates the answer channel's update path, not
+      // this settle — live-verified "Process panel collapsed" follows a
+      // successful settings close).
+      if (!this.state || (this.closed && !options?.allowClosed)) {
+        return;
+      }
+      const desired = this.state.processLogDesired;
+      if (!desired || desired === this.state.processLogSent) {
+        return;
+      }
+      this.state.sequence += 1;
+      try {
+        await this.requestCardKit(
+          `/${this.state.cardId}/elements/process_log_content/content`,
+          operation,
+          "PUT",
+          () => ({
+            content: desired,
+            sequence: this.state!.sequence,
+            uuid: `p_${this.state!.cardId}_${this.state!.sequence}`,
+          }),
+          (response, auditContext) =>
+            assertSuccessfulCardKitResponse(response, auditContext, "Append process log"),
+        );
+        this.state.processLogSent = desired;
+      } catch (error) {
+        this.log?.(`Process log update failed: ${String(error)}`);
+      }
+    });
+  }
+
+  // Settles the latest desired log text before the close path drains the
+  // queue, so the final rows reach the panel while the session is still
+  // writable (the throttle timer is cancelled — it would see `closed`).
+  private settleProcessLogPending(): void {
+    if (this.processLogTimer) {
+      clearTimeout(this.processLogTimer);
+      this.processLogTimer = null;
+    }
+    if (!this.state) {
+      return;
+    }
+    this.lastUpdateTime = Date.now();
+    this.enqueueProcessLogWrite("process-log-final", { allowClosed: true });
+  }
+
+  // Terminal fold: collapse the process panel (log rows carry real content —
+  // multiple rows or a failure escalation) or remove it otherwise, so one-step
+  // turns like a compact action do not keep a "执行过程 · 1 步" divider block.
+  // Both run after the settings close, where element PATCH applies freely
+  // (QwenPaw #7570 verified post-close); failures never propagate — the
+  // streamed card is already complete and usable either way.
+  private async finalizeProcessPanel(): Promise<void> {
+    if (!this.state) {
+      return;
+    }
+    const state = this.state;
+    if (state.processLogSent && (state.processLogEntries > 1 || state.processLogHasFailure)) {
+      state.sequence += 1;
+      await this.requestCardKit(
+        `/${state.cardId}/elements/process_log`,
+        "panel-collapse",
+        "PATCH",
+        () => ({
+          partial_element: JSON.stringify({
+            expanded: false,
+            header: {
+              title: { tag: "plain_text", content: `执行过程 · ${state.processLogEntries} 步` },
+            },
+          }),
+          sequence: state.sequence,
+          uuid: `c_${state.cardId}_${state.sequence}`,
+        }),
+        (response, auditContext) =>
+          assertSuccessfulCardKitResponse(response, auditContext, "Collapse process panel"),
+      );
+      this.log?.("Process panel collapsed on the closed card");
+      return;
+    }
+    state.sequence += 1;
+    await this.requestCardKit(
+      `/${state.cardId}/elements/process_log`,
+      "panel-remove",
+      "DELETE",
+      () => ({
+        sequence: state.sequence,
+        uuid: `d_${state.cardId}_${state.sequence}`,
+      }),
+      (response, auditContext) =>
+        assertSuccessfulCardKitResponse(response, auditContext, "Remove process panel"),
+    );
+    // The hr divider above the panel is ours (element_id at card build);
+    // it must go with the panel or a lone line survives on the closed
+    // card. Secondary cleanup: never blocks the fold.
+    try {
+      state.sequence += 1;
+      await this.requestCardKit(
+        `/${state.cardId}/elements/process_log_divider`,
+        "panel-divider-remove",
+        "DELETE",
+        () => ({
+          sequence: state.sequence,
+          uuid: `d_${state.cardId}_${state.sequence}`,
+        }),
+        (response, auditContext) =>
+          assertSuccessfulCardKitResponse(response, auditContext, "Remove process panel divider"),
+      );
+    } catch (error: unknown) {
+      this.log?.(
+        `Process panel divider removal skipped: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    this.log?.("Process panel removed on the closed card");
+  }
+
+  async discard(): Promise<FeishuStreamingCloseResult> {
     if (!this.state || this.closed) {
       return { visibleReplySent: false };
     }
@@ -575,6 +765,7 @@ export class FeishuStreamingSession {
     }
     this.closed = true;
     this.clearFlushTimer();
+    this.settleProcessLogPending();
     await this.queue;
     this.settleContentFlushWaiters();
 
