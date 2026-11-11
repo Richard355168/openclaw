@@ -67,6 +67,16 @@ it("replaces obsolete previews with the final reply during delayed native CardKi
           (method === "PATCH" && path.endsWith("/settings"))
         ) {
           result = { code: 0 };
+        } else if (method === "PATCH" && path.endsWith("/settings")) {
+          result = { code: 0 };
+        } else if (
+          (method === "PATCH" || method === "DELETE") &&
+          (path.endsWith("/elements/process_log") || path.endsWith("/elements/process_log_divider"))
+        ) {
+          // Patch 0006 v2: terminal fold of the process panel (collapse when
+          // the turn logged rows, removal when it did not). Patch 0006 v6
+          // takes the panel's hr divider along on removal.
+          result = { code: 0 };
         } else {
           throw new Error(`Unexpected owned Feishu request: ${method} ${path}`);
         }
@@ -170,8 +180,14 @@ it("replaces obsolete previews with the final reply during delayed native CardKi
     expect(JSON.parse(String(close?.body.settings))).toMatchObject({
       config: { streaming_mode: false, summary: { content: summary } },
     });
-    expect(requests.at(-1)).toBe(close);
-    expect(contents).toEqual([first, final]);
+    // Settings close is the last core request; the terminal process-panel
+    // fold (patch 0006 v2) follows it — these previews logged no rows, so
+    // the empty panel is removed and its hr divider follows (patch 0006 v6).
+    expect(requests.at(-3)).toBe(close);
+    expect(requests.at(-2)).toMatchObject({ method: "DELETE" });
+    expect(String(requests.at(-2)?.path)).toMatch(/\/elements\/process_log$/);
+    expect(String(requests.at(-1)?.path)).toMatch(/\/elements\/process_log_divider$/);
+    return { contents, first, final };
   } finally {
     releaseFirstWrite.resolve();
     await idle?.catch(() => {});

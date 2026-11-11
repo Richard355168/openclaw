@@ -12,7 +12,7 @@ import { FeishuConfigSchema } from "./config-schema.js";
 import type { FeishuConfig } from "./types.js";
 
 export function createReplyAccount(
-  renderMode: "auto" | "card",
+  renderMode: "auto" | "card" | "raw",
   streamingMode: "off" | "partial",
   domain: "feishu" | "lark",
   overrides: Partial<FeishuConfig> = {},

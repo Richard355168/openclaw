@@ -137,10 +137,9 @@ const FeishuStreamingSchema = z
     // transport owns its narrower off/partial enum above.
     preview: ChannelStreamingPreviewSchema.optional(),
     progress: ChannelStreamingProgressSchema.optional(),
-    // Progress-draft disposition when the final answer closes the streaming
-    // card: "overwrite" (default) keeps only the committed answer, matching the
-    // other draft channels; "append" retains the rolling progress lines above
-    // the final answer behind a separator.
+    // Retained for config round-trip compatibility only: the process history
+    // now always lands in the terminal panel element (patch 0006 v2), so this
+    // key currently has no behavioral reader.
     finalize: z.enum(["overwrite", "append"]).optional(),
   })
   .strict()
