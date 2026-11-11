@@ -79,12 +79,18 @@ export class FeishuStreamingFinalizationError extends Error {
 }
 
 /** Options for customising the initial streaming card appearance. */
+type StreamingCardOptions = {
+  /** Optional header with title and color template. */
+  header?: CardHeaderConfig;
+  /** Optional grey note footer text. */
+  note?: string;
+};
+
 type StreamingStartOptions = {
   replyToMessageId?: string;
   replyInThread?: boolean;
   rootId?: string;
   header?: CardHeaderConfig;
-  note?: string;
 };
 
 // CardKit closes streaming_mode ten minutes after it was last enabled, then rejects
@@ -107,7 +113,8 @@ export class FeishuStreamingSession {
   private contentFlushWaiters: Array<{ text: string; resolve: (ok: boolean) => void }> = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private updateThrottleMs = STREAMING_UPDATE_THROTTLE_MS;
-  private deps?: FeishuStreamingDeps;
+  private fetchImpl?: FeishuStreamingFetch;
+  private lookupFn?: LookupFn;
 
   constructor(
     client: Client,
@@ -118,7 +125,8 @@ export class FeishuStreamingSession {
     this.client = client;
     this.creds = creds;
     this.log = log;
-    this.deps = deps;
+    this.fetchImpl = deps?.fetchImpl;
+    this.lookupFn = deps?.lookupFn;
   }
 
   private async requestCardKit<T>(
@@ -136,7 +144,11 @@ export class FeishuStreamingSession {
         method,
         headers: {
           Authorization: `Bearer ${
-            token ?? (await getToken(this.creds, { ...(this.deps ?? {}) }))
+            token ??
+            (await getToken(this.creds, {
+              fetchImpl: this.fetchImpl,
+              lookupFn: this.lookupFn,
+            }))
           }`,
           "Content-Type":
             method === "PATCH" ? "application/json; charset=utf-8" : "application/json",
@@ -145,8 +157,8 @@ export class FeishuStreamingSession {
         // Token renewal can await; read the current sequence only at dispatch.
         body: JSON.stringify(body()),
       },
-      fetchImpl: this.deps?.fetchImpl,
-      lookupFn: this.deps?.lookupFn,
+      fetchImpl: this.fetchImpl,
+      lookupFn: this.lookupFn,
       policy: { allowedHostnames: resolveAllowedHostnames(this.creds.domain) },
       auditContext,
       timeoutMs: this.creds.httpTimeoutMs ?? FEISHU_HTTP_TIMEOUT_MS,
@@ -161,7 +173,7 @@ export class FeishuStreamingSession {
   async start(
     receiveId: string,
     receiveIdType: "open_id" | "user_id" | "union_id" | "email" | "chat_id" = "chat_id",
-    options?: StreamingStartOptions,
+    options?: StreamingCardOptions & StreamingStartOptions,
   ): Promise<void> {
     if (this.state) {
       return;
@@ -454,7 +466,7 @@ export class FeishuStreamingSession {
       return;
     }
     // Token failures propagate; only the note request itself is best effort.
-    const token = await getToken(this.creds, { ...(this.deps ?? {}) });
+    const token = await getToken(this.creds, this.deps);
     await this.putElement(
       "note/content",
       "note-update",
@@ -506,10 +518,12 @@ export class FeishuStreamingSession {
       }
     }
 
+    // Update note with final model/provider info
     if (options?.note) {
       await this.updateNoteContent(options.note);
     }
 
+    // Close streaming mode
     // A rejected final write must not advertise content that CardKit never accepted.
     const acceptedText = this.state.sentText;
     let closeError: unknown;
