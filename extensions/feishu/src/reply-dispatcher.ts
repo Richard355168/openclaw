@@ -41,7 +41,8 @@ import {
   renderFeishuReplyPayload,
   withinCardTableLimit,
 } from "./presentation-card.js";
-import { buildFeishuCompactionProgressLine, stripFeishuProgressLabel } from "./progress-draft.js";
+import { createProcessLogBuilder } from "./progress-display-text.js";
+import { buildFeishuCompactionProgressLine } from "./progress-draft.js";
 import {
   createFeishuPartialReplyDeliveryError,
   createFeishuReplyDeliveryResult,
@@ -78,6 +79,19 @@ function mergeStreamingFinalText(
     return previousText;
   }
   return `${previousText}\n\n${nextText}`;
+}
+
+/**
+ * Strip the frozen narration prefix (patch 0006 v3): narration prose lives on
+ * in the process-log panel, so finalized/standalone deliveries carry only the
+ * committed answer. Falls back to the input when the base is empty, is not a
+ * real prefix, or nothing follows it (narration-only turns keep their only
+ * visible content instead of regressing to an empty reply).
+ */
+function stripNarrationPrefix(value: string, narrationBase: string): string {
+  return narrationBase && value.startsWith(narrationBase) && value.length > narrationBase.length
+    ? value.slice(narrationBase.length)
+    : value;
 }
 
 /** Maximum age (ms) for a message to receive a typing indicator reaction.
@@ -245,7 +259,6 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
   const tableMode = core.channel.text.resolveMarkdownTableMode({ cfg, channel: "feishu" });
   const renderMode = account.config?.renderMode ?? "auto";
   const streamMode = resolveChannelPreviewStreamMode(account.config, "partial");
-  const keepProgressAtFinal = account.config?.streaming?.finalize === "append";
   // Streaming cards cannot attach native mention recipients. Bot-authored ingress
   // therefore uses normal cards/posts so every emitted unit reaches the peer bot.
   const streamingEnabled =
@@ -263,11 +276,10 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
   // explicit channel choice still wins. Blocks then cover replies where no
   // preview card can render (mention-required groups, raw render mode,
   // modifying hooks).
-  const blockStreamingEnabled = resolveChannelStreamingBlockEnabled(account.config, {
+  const coreBlockStreamingEnabled = resolveChannelStreamingBlockEnabled(account.config, {
     previewAvailable: previewStreamingEnabled,
     blockStreamingDefault: cfg.agents?.defaults?.blockStreamingDefault,
   });
-  const coreBlockStreamingEnabled = resolveChannelStreamingBlockEnabled(account.config) === true;
   const reasoningPreviewEnabled = previewStreamingEnabled && params.allowReasoningPreview === true;
 
   let streaming: FeishuStreamingSession | null = null;
@@ -278,8 +290,43 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
   let reasoningText = "";
   let statusLine = "";
   let modelWaitLine = "";
-  let progressDraftLabel: string | undefined;
   let snapshotBaseText = "";
+  // Full process log for the panel element (patch 0006 v2): append-only
+  // builder fed from the compositor's rolling window; the rendered text only
+  // ever grows, so CardKit types just the new rows.
+  const processLog = createProcessLogBuilder();
+  const flushProcessLog = () => {
+    if (!processLog.renderText()) {
+      return;
+    }
+    const logSession = streaming;
+    const logStartPromise = streamingStartPromise;
+    // Enqueue onto the same serialized queue the close path awaits. The
+    // session INSTANCE is captured at enqueue: performStreamingClose nulls the
+    // `streaming` variable at its head, before it awaits this queue, so the
+    // running task must not re-read that variable. The text itself is read
+    // fresh inside the task (memoized, so an unchanged publish is cheap) —
+    // the session-side processLogSent is the single dedupe point, and a
+    // write that found no session (start backed off / failed) or was rejected
+    // is retried by the next flush.
+    partialUpdateQueue = partialUpdateQueue.then(async () => {
+      if (logStartPromise) {
+        await logStartPromise.catch(() => {});
+      }
+      if (!logSession) {
+        return;
+      }
+      await logSession.appendProcessLog(
+        processLog.renderText(),
+        processLog.entryCount(),
+        processLog.hasFailureEntry(),
+      );
+    });
+    partialUpdateQueue = partialUpdateQueue.then(
+      () => undefined,
+      () => undefined,
+    );
+  };
   // Partial previews are replaceable; only committed final text may precede an error notice.
   let hasStreamingFinalText = false;
   const deliveredFinalTexts = new Set<string>();
@@ -288,6 +335,10 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     disposition: StreamingDisposition;
     result: FeishuReplyDeliveryResult;
     content?: string;
+    // Stripped close text (answer only). The idle-side rejected-final recovery
+    // runs after resetStreamingState() cleared the narration base, so it cannot
+    // recompute the boundary and consumes this instead.
+    finalText?: string;
     error?: unknown;
   };
   let lastStreamingSettlement: StreamingCloseOutcome | undefined;
@@ -485,6 +536,10 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
   const performStreamingClose = async (
     disposition: StreamingDisposition,
   ): Promise<StreamingCloseOutcome> => {
+    // Every close path resets the process-log builder, session or not, so the
+    // next turn starts with a fresh log. The panel itself is finalized inside
+    // the session (collapse/remove after the settings close).
+    processLog.reset();
     const streamingToClose = streaming;
     if (!streamingToClose) {
       return lastStreamingSettlement ?? { disposition, result: noVisibleFeishuReplyDelivery };
@@ -493,15 +548,26 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     const updateQueueToClose = partialUpdateQueue;
     const finalizedAnswerText = streamText;
     const finalizedReasoningText = reasoningText;
+    // Frozen narration prefix: the snapshot base from the answer message's
+    // start boundary. Every close-time streamText form (partial snapshot,
+    // final merge, error append) keeps it as a prefix invariant.
+    const finalizedNarrationBase = snapshotBaseText;
+    // Patch 0006 v3: the finalized card body carries only the committed
+    // answer — narration prose lives on in the process-log panel. Computed
+    // before the reset and carried on the outcome so the rejected-final
+    // recovery (which runs after resetStreamingState) stays answer-only too.
+    const finalizedCloseText = buildCombinedStreamText(
+      finalizedReasoningText,
+      stripNarrationPrefix(finalizedAnswerText, finalizedNarrationBase),
+    );
     const outcome = {
       disposition,
       content: finalizedAnswerText,
+      ...(disposition === "closed" && finalizedCloseText.trim()
+        ? { finalText: finalizedCloseText }
+        : {}),
     };
-    // Upstream 10.10 moves resetStreamingState() to the head of the close path,
-    // but the retained progress lines for finalize:append must be read from the
-    // pre-reset status slot; capture before the reset.
-    const statusLineAtClose = statusLine;
-    const progressDraftLabelAtClose = progressDraftLabel;
+    // Upstream 10.10 moves resetStreamingState() to the head of the close path.
     resetStreamingState();
     try {
       if (startPromiseToClose) {
@@ -511,21 +577,11 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       let result = noVisibleFeishuReplyDelivery;
       let finalizationError: unknown;
       if (streamingToClose?.isActive()) {
-        // Append finalize keeps the rolling progress lines but drops the rotating
-        // status label (it marks an in-flight turn, which has just ended) and
-        // places the retained lines above the answer behind a separator.
-        // Progress only counts as delivered content alongside a committed
-        // answer: retaining it on an empty turn would make closeWithResult
-        // report visible content and suppress the no-visible-reply fallback.
-        // Overwrite drops the lines entirely, matching the other draft channels.
-        const retainedProgress =
-          keepProgressAtFinal && finalizedAnswerText
-            ? stripFeishuProgressLabel(statusLineAtClose, progressDraftLabelAtClose)
-            : "";
+        // Patch 0006 v2: the process history lives in the card's own panel
+        // element, which fulfills finalize:append with a folded record —
+        // inline retention above the answer is retired outright.
         statusLine = "";
-        const text = retainedProgress
-          ? `${retainedProgress}\n\n· · ·\n\n${buildCombinedStreamText(finalizedReasoningText, finalizedAnswerText)}`
-          : buildCombinedStreamText(finalizedReasoningText, finalizedAnswerText);
+        const text = finalizedCloseText;
         let closed;
         try {
           if (disposition === "discarded") {
@@ -637,16 +693,24 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     active: previewStreamingEnabled,
     seed: `${account.accountId}:${sendTarget}`,
     // Narration preambles flow through the shared commentary lane; the 💬 lane
-    // marker is this channel's presentation choice for it.
+    // marker is this channel's presentation choice for it. Bare text (no
+    // italics): the process-log panel reads the lane lines verbatim, and
+    // italic wrappers would break the append-only prefix growth checks.
     commentaryLinePrefix: "💬 ",
+    commentaryItalics: false,
     // 2026.10.6+ moved tool glyphs behind this compositor flag (the
     // pre-10.6 formatter inlined them); opt in so rolling tool lines carry
     // 🛠️/📖/… icons.
     toolIcons: true,
-    update: async (draftText, options) => {
-      statusLine = draftText;
-      progressDraftLabel = options.snapshot.label;
+    update: async (_draftText, options) => {
+      // The compositor's composed window text (draftText) is retired from the
+      // card: the process lane moved to its own append-only panel element
+      // (patch 0006 v2), so tool updates never re-render the answer text.
+      statusLine = "";
+      processLog.record(options.lines);
+      processLog.recordPlan(options.snapshot.plan);
       startStreaming();
+      flushProcessLog();
       // Acceptance comes from the transport itself: flush awaits CardKit
       // creation settling and the confirmed content write. An acknowledged
       // publication is cached as rendered, so a rejected write must return
@@ -949,7 +1013,10 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             try {
               providerFinalized = await ensureVisibleStreamingDelivery(
                 providerFinalized,
-                completion.result.content,
+                // Recovery re-delivers what the card was supposed to commit:
+                // the close text (answer only). completion content still
+                // carries the narration prefix and stays the dedupe key.
+                closeOutcome.finalText ?? completion.result.content,
                 completion.infoKind,
               );
             } catch (fallbackError: unknown) {
@@ -1232,6 +1299,10 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               payload.isError === true && hasStreamingFinalText,
             )
           : reply.text;
+      // Frozen before any discard path: performStreamingClose resets
+      // snapshotBaseText, and the standalone fallback delivery below runs
+      // after that reset but still needs the narration boundary.
+      const finalNarrationBase = info?.kind === "final" ? snapshotBaseText : "";
       const hasText = reply.hasText;
       const hasMedia = reply.hasMedia;
       const ttsSupplement = getReplyPayloadTtsSupplement(payload);
@@ -1396,7 +1467,10 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             } catch (error: unknown) {
               await throwStreamingDeliveryFailure({
                 error,
-                content: text,
+                // Recovery deliveries answer only (patch 0006 v3): the
+                // narration prefix stays owned by the process panel, matching
+                // the close and standalone-fallback paths.
+                content: stripNarrationPrefix(text, finalNarrationBase),
                 infoKind: info?.kind,
               });
             }
@@ -1414,14 +1488,24 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           (useStreamingCard &&
             !isStreamingStartBackedOff(account.accountId) &&
             withinCardTableLimit(text));
+        // The preview was discarded (over-limit final, presentation fallback,
+        // media takeover): the standalone delivery answers only, matching the
+        // close path — the narration prefix stays owned by the process panel.
+        const standaloneText = stripNarrationPrefix(text, finalNarrationBase);
         if (useFallbackCard) {
           deliveredResults.push(
-            await sendChunkedTextReply({ text, useCard: true, infoKind: info?.kind }),
+            await sendChunkedTextReply({
+              text: standaloneText,
+              useCard: true,
+              infoKind: info?.kind,
+            }),
           );
         } else {
           const firstChunkMentions =
             info?.kind === "final" && mentionTargets?.length ? mentionTargets : undefined;
-          deliveredResults.push(await sendPostReply(text, info?.kind, firstChunkMentions));
+          deliveredResults.push(
+            await sendPostReply(standaloneText, info?.kind, firstChunkMentions),
+          );
         }
       }
 
@@ -1430,7 +1514,12 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           sendMediaReplies(
             payload,
             !shouldDeliverText && !ttsTextAlreadyVisible && hasVoiceMedia && hasText
-              ? { fallbackText: text }
+              ? {
+                  // Voice fallback delivers the answer only (patch 0006 v3):
+                  // the narration prefix stays owned by the process panel,
+                  // matching the close and standalone-fallback paths.
+                  fallbackText: stripNarrationPrefix(text, finalNarrationBase),
+                }
               : undefined,
           ),
         );
