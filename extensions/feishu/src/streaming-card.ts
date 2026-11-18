@@ -157,9 +157,7 @@ export class FeishuStreamingSession {
       init: {
         method,
         headers: {
-          Authorization: `Bearer ${
-            token ?? (await getToken(this.creds, { ...(this.deps ?? {}) }))
-          }`,
+          Authorization: `Bearer ${token ?? (await getToken(this.creds, this.deps))}`,
           "Content-Type":
             method === "PATCH" ? "application/json; charset=utf-8" : "application/json",
           "User-Agent": getFeishuUserAgent(),
@@ -476,7 +474,7 @@ export class FeishuStreamingSession {
     this.state.sequence += 1;
     const path = `/${this.state.cardId}/elements/note/content`;
     // Token failures propagate; only the note request itself is best effort.
-    const token = await getToken(this.creds, { ...(this.deps ?? {}) });
+    const token = await getToken(this.creds, this.deps);
     await this.requestCardKit(
       path,
       "note-update",
@@ -602,7 +600,7 @@ export class FeishuStreamingSession {
               "Feishu streaming card finalization failed",
             )
           : (finalWriteError ?? closeError);
-      throw createFeishuPartialReplyDeliveryError(cause, result);
+      throw new FeishuStreamingFinalizationError(cause, result);
     }
     return result;
   }
@@ -856,7 +854,9 @@ export class FeishuStreamingSession {
     }
     this.closed = true;
     this.clearFlushTimer();
-    this.settleProcessLogPending();
+    // No settleProcessLogPending here: any pending rows are about to be
+    // deleted together with the whole message; on delete failure the fallback
+    // closeWithResult("") performs its own settle.
     await this.queue;
     this.settleContentFlushWaiters();
 
