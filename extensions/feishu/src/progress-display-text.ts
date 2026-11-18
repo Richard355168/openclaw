@@ -26,6 +26,8 @@ export type ProcessLogBuilder = {
   entryCount: () => number;
   /** Any escalated ⚠️ row — a single-row log must still keep its panel. */
   hasFailureEntry: () => boolean;
+  /** Keyed retraction for mid-turn line retirement (hidden/suppressed items). */
+  retract: (keys: readonly string[]) => void;
   reset: () => void;
 };
 
@@ -213,6 +215,15 @@ export function createProcessLogBuilder(options?: ProcessLogBuilderOptions): Pro
         }
       }
       return false;
+    },
+    retract(keys) {
+      for (const key of keys) {
+        // Deleting an existing row invalidates the memo; a key that is not
+        // present (never recorded, or already retracted) is a no-op.
+        if (entries.delete(key)) {
+          cachedRender = null;
+        }
+      }
     },
     reset() {
       entries.clear();
