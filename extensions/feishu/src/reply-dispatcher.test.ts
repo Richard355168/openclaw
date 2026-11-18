@@ -113,7 +113,7 @@ import {
 import { streamingStartBackoffUntilByAccount } from "./reply-dispatcher-state.js";
 import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
 import { createReplyAccount } from "./reply-dispatcher.test-support.js";
-import type { FeishuStreamingSession } from "./streaming-card.js";
+import { FeishuStreamingFinalizationError, type FeishuStreamingSession } from "./streaming-card.js";
 type StreamingCloseResult = Awaited<ReturnType<FeishuStreamingSession["closeWithResult"]>>;
 const imageUrl = "https://example.com/image.png";
 
@@ -1342,10 +1342,11 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       }
       await options.onIdle?.();
       expectNoStaticReply();
-      expect(streamingInstances).toHaveLength(mode === "card" ? 1 : 0);
+      // Lazy draft (patch 0006 v6): no work event in an empty settle, so no
+      // streaming session is built at all — even for card mode.
+      expect(streamingInstances).toHaveLength(0);
+      await expect(result.ensureNoVisibleReplyFallback("zero-final-count")).resolves.toBe(true);
       if (mode === "card") {
-        expectClosed("");
-        await expect(result.ensureNoVisibleReplyFallback("zero-final-count")).resolves.toBe(true);
         expect(sendMessageFeishuMock).toHaveBeenCalledTimes(1);
       }
     },

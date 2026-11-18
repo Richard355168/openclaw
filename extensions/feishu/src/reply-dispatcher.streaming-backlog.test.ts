@@ -67,8 +67,6 @@ it("replaces obsolete previews with the final reply during delayed native CardKi
           (method === "PATCH" && path.endsWith("/settings"))
         ) {
           result = { code: 0 };
-        } else if (method === "PATCH" && path.endsWith("/settings")) {
-          result = { code: 0 };
         } else if (
           (method === "PATCH" || method === "DELETE") &&
           (path.endsWith("/elements/process_log") || path.endsWith("/elements/process_log_divider"))

@@ -217,6 +217,10 @@ export function createProcessLogBuilder(options?: ProcessLogBuilderOptions): Pro
     reset() {
       entries.clear();
       lastKey = undefined;
+      // cachedRender deliberately NOT cleared (fold/b semantics): an append
+      // task already enqueued before this reset must still read the last
+      // published text via the memo when it runs — the session-side
+      // processLogSent dedupe guards against any duplicate write.
     },
   };
 }

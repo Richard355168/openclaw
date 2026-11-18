@@ -91,6 +91,37 @@ function writeJson(res: ServerResponse, payload: unknown, status = 200): void {
   res.end(JSON.stringify(payload));
 }
 
+function jsonResponse(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function setStreamingSessionInternals(
+  session: FeishuStreamingSession,
+  values: {
+    state?: StreamingSessionState;
+    lastUpdateTime?: number;
+    startedAtMs?: number;
+  },
+): void {
+  const internals = session as unknown as {
+    state: StreamingSessionState | null;
+    lastUpdateTime: number;
+    startedAtMs: number | null;
+  };
+  if (values.state !== undefined) {
+    internals.state = values.state;
+  }
+  if (values.lastUpdateTime !== undefined) {
+    internals.lastUpdateTime = values.lastUpdateTime;
+  }
+  if (values.startedAtMs !== undefined) {
+    internals.startedAtMs = values.startedAtMs;
+  }
+}
+
 function createActiveSession(
   deps: StreamingFetchDeps,
   options: {
@@ -205,6 +236,40 @@ describe("FeishuStreamingSession", () => {
       settingsBodies,
       log,
     };
+  }
+
+  function mockFetches(
+    updateBodies: string[],
+    failedContentUpdateIndexes: ReadonlySet<number> = new Set<number>(),
+    replaceBodies: string[] = [],
+    failedContentUpdateStatuses: ReadonlyMap<number, number> = new Map<number, number>(),
+    failedReplaceStatuses: ReadonlyMap<number, number> = new Map<number, number>(),
+  ): StreamingFetchDeps {
+    return createMemoryFetch((url, body) => {
+      let status = 200;
+      if (url.pathname.includes("/auth/")) {
+        return jsonResponse(createStreamingTokenPayload());
+      }
+      if (url.pathname.includes("/elements/content/content")) {
+        const updateIndex = updateBodies.length;
+        updateBodies.push(body);
+        if (failedContentUpdateIndexes.has(updateIndex)) {
+          throw new Error(`content update ${updateIndex} failed`);
+        }
+        const failedStatus = failedContentUpdateStatuses.get(updateIndex);
+        if (failedStatus !== undefined) {
+          status = failedStatus;
+        }
+      } else if (url.pathname.includes("/elements/content")) {
+        const replaceIndex = replaceBodies.length;
+        replaceBodies.push(body);
+        const failedStatus = failedReplaceStatuses.get(replaceIndex);
+        if (failedStatus !== undefined) {
+          status = failedStatus;
+        }
+      }
+      return jsonResponse({ code: 0, msg: "ok" }, status);
+    });
   }
 
   function mockAcceptedStreamingCard(params: {
@@ -329,25 +394,23 @@ describe("FeishuStreamingSession", () => {
         expect(remove).toHaveBeenCalledExactlyOnceWith({ path: { message_id: messageId } });
       } else {
         expect(remove).not.toHaveBeenCalled();
-        expect(JSON.parse(String(requests[1]?.body.element))).toEqual({
-          tag: "markdown",
-          content: "",
-          element_id: "content",
-        });
+        // Content-level clear PUT (see closeWithResult): the clear is a second
+        // content write, not an element-level replace.
+        expect(requests[1]?.body).toMatchObject({ content: "" });
       }
       expect(requests.map(({ path }) => path)).toEqual([
         "/open-apis/cardkit/v1/cards/card_accepted/elements/content/content",
         ...(!messageId
           ? [
-              "/open-apis/cardkit/v1/cards/card_accepted/elements/content",
+              "/open-apis/cardkit/v1/cards/card_accepted/elements/content/content",
               "/open-apis/cardkit/v1/cards/card_accepted/settings",
+              // Patch 0006 v2: the process panel ships with the card and is
+              // removed at close when the turn produced no log rows; patch
+              // 0006 v6 takes the panel's hr divider along.
+              "/open-apis/cardkit/v1/cards/card_accepted/elements/process_log",
+              "/open-apis/cardkit/v1/cards/card_accepted/elements/process_log_divider",
             ]
           : []),
-        // Patch 0006 v2: the process panel ships with the card and is removed
-        // at close when the turn produced no log rows; patch 0006 v6 takes
-        // the panel's hr divider along.
-        "/open-apis/cardkit/v1/cards/card_accepted/elements/process_log",
-        "/open-apis/cardkit/v1/cards/card_accepted/elements/process_log_divider",
       ]);
       expect(session.isActive()).toBe(false);
     },
@@ -365,9 +428,14 @@ describe("FeishuStreamingSession", () => {
       await session.start("chat_1");
       await session.update("Already visible answer");
 
-      await expect(session.discard()).rejects.toMatchObject(
-        partialDelivery("Already visible answer", messageId ? { messageIds: [messageId] } : {}),
-      );
+      await expect(session.discard()).rejects.toMatchObject({
+        name: "FeishuStreamingFinalizationError",
+        result: {
+          visibleReplySent: true,
+          content: "Already visible answer",
+          finalTextAccepted: false,
+        },
+      });
       expect(remove).toHaveBeenCalledTimes(messageId ? 1 : 0);
       expect(session.isActive()).toBe(false);
     },
@@ -382,9 +450,13 @@ describe("FeishuStreamingSession", () => {
     await session.start("chat_1");
     await session.update("Already visible answer");
 
-    await expect(session.closeWithResult("Already visible answer")).rejects.toMatchObject(
-      partialDelivery("Already visible answer"),
-    );
+    await expect(session.closeWithResult("Already visible answer")).rejects.toMatchObject({
+      name: "FeishuStreamingFinalizationError",
+      result: {
+        visibleReplySent: true,
+        content: "Already visible answer",
+      },
+    });
   });
 
   it("still rejects provider-declined streaming card messages", async () => {
@@ -559,12 +631,7 @@ describe("FeishuStreamingSession", () => {
     const updateBodies: string[] = [];
     const deps = createMemoryFetch((url, body) => {
       if (url.pathname.includes("/auth/")) {
-        return jsonResponse({
-          code: 0,
-          msg: "ok",
-          tenant_access_token: "token",
-          expire: 7200,
-        });
+        return jsonResponse(createStreamingTokenPayload());
       }
       if (url.pathname.includes("/elements/content/content")) {
         updateBodies.push(body);
@@ -756,14 +823,9 @@ describe("FeishuStreamingSession", () => {
 
     await session.closeWithResult();
 
-    expect(updateBodies).toHaveLength(0);
-    expect(replaceBodies).toHaveLength(1);
-    const payload = JSON.parse(replaceBodies[0] ?? "{}") as { element?: string };
-    expect({ ...payload, element: JSON.parse(payload.element ?? "{}") }).toEqual({
-      element: { tag: "markdown", content: next, element_id: "content" },
-      sequence: 2,
-      uuid: "r_card_pending_reasoning_close_2",
-    });
+    expect(updateBodies).toHaveLength(1);
+    expect(replaceBodies).toHaveLength(0);
+    expect(JSON.parse(updateBodies[0] ?? "{}")).toMatchObject({ content: next });
   });
 
   it("retains prior visible content when CardKit rejects a divergent close replacement", async () => {
@@ -772,10 +834,10 @@ describe("FeishuStreamingSession", () => {
     const previous = "> Thinking one\n\n---\n\nanswer";
     const next = "> Thinking two\n\n---\n\nanswer more";
     let sentTextWhenSettingsClosed: string | undefined;
-    const { session, replaceBodies, settingsBodies, log } = mockActiveSession(
+    const { session, updateBodies, settingsBodies, log } = mockActiveSession(
       { cardId: "card_rejected_pending_reasoning_close", text: previous, lastUpdateTime: 2_900 },
       {
-        bodyErrors: { "/elements/content": { code: 19_002, msg: "replacement rejected" } },
+        bodyErrors: { "/elements/content/content": { code: 19_002, msg: "replacement rejected" } },
         onSettings: (active) => {
           sentTextWhenSettingsClosed = (active as unknown as { state: StreamingSessionState }).state
             .sentText;
@@ -784,9 +846,12 @@ describe("FeishuStreamingSession", () => {
     );
 
     await session.update(next);
-    await expect(session.closeWithResult()).rejects.toMatchObject(partialDelivery(previous));
+    await expect(session.closeWithResult()).rejects.toMatchObject({
+      name: "FeishuStreamingFinalizationError",
+      result: { visibleReplySent: true, content: previous, finalTextAccepted: false },
+    });
 
-    expect(replaceBodies).toHaveLength(1);
+    expect(updateBodies).toHaveLength(1);
     expect(settingsBodies).toHaveLength(1);
     expect(sentTextWhenSettingsClosed).toBe(previous);
     expect(readSummary(settingsBodies[0])).toBe(previous.replaceAll("\n", " ").trim());
@@ -816,9 +881,10 @@ describe("FeishuStreamingSession", () => {
       .catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(Error);
-    expect(error).toMatchObject(
-      partialDelivery("visible answer", { messageIds: ["om_rejected_note_and_close"] }),
-    );
+    expect(error).toMatchObject({
+      name: "FeishuStreamingFinalizationError",
+      result: { visibleReplySent: true, content: "visible answer" },
+    });
 
     expect(noteBodies).toHaveLength(1);
     expect(settingsBodies).toHaveLength(1);
@@ -899,29 +965,23 @@ describe("FeishuStreamingSession", () => {
           text,
           lastUpdateTime: 3_000,
         },
-        replace
-          ? { replaceStatuses: new Map([[0, 500]]) }
-          : { updateStatuses: new Map([[0, 500]]) },
+        { updateStatuses: new Map([[0, 500]]) },
       );
       const error = await session.closeWithResult(finalText).catch((caught: unknown) => caught);
-      if (text) {
-        expect(error).toMatchObject(
-          partialDelivery(
-            text,
-            replace ? {} : { messageIds: [`om_failed_${mode}`], finalTextAccepted: false },
-          ),
-        );
-      } else {
-        expect(error).toBeInstanceOf(Error);
-        expect(error).toMatchObject({ message: "Update card content failed with HTTP 500" });
-        expect(error).not.toHaveProperty("deliveryResult");
-      }
-      expect(updateBodies).toHaveLength(replace ? 0 : 1);
-      expect(replaceBodies).toHaveLength(replace ? 1 : 0);
+      // All three modes flow through the content-level final write (patch 0006
+      // v6 retired the element-level replace path), so a rejected write always
+      // escalates to the FeishuStreamingFinalizationError contract.
+      expect(error).toMatchObject({
+        name: "FeishuStreamingFinalizationError",
+        result: {
+          visibleReplySent: text ? true : false,
+          finalTextAccepted: false,
+        },
+      });
+      expect(updateBodies).toHaveLength(1);
+      expect(replaceBodies).toHaveLength(0);
       expect(log).toHaveBeenCalledWith(
-        replace
-          ? "Final replace failed: Error: Replace card content failed with HTTP 500"
-          : "Final update failed: Error: Update card content failed with HTTP 500",
+        "Final update failed: Error: Update card content failed with HTTP 500",
       );
     },
   );
@@ -969,7 +1029,7 @@ describe("FeishuStreamingSession streaming-mode expiry", () => {
     let rearmed = false;
     const deps = createMemoryFetch((url, body) => {
       if (url.pathname.includes("/auth/")) {
-        return jsonResponse({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 });
+        return jsonResponse(createStreamingTokenPayload());
       }
       if (url.pathname.endsWith("/cardkit/v1/cards")) {
         cardCreates.push(body);
@@ -1163,7 +1223,7 @@ describe("FeishuStreamingSession streaming-mode expiry", () => {
     const updateBodies: string[] = [];
     const deps = createMemoryFetch((url, body) => {
       if (url.pathname.includes("/auth/")) {
-        return jsonResponse({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 });
+        return jsonResponse(createStreamingTokenPayload());
       }
       if (url.pathname.includes("/elements/content/content")) {
         updateBodies.push(body);
