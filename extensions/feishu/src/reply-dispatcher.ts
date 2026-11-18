@@ -1621,9 +1621,33 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
                   itemId: payload.itemId,
                 });
               }
-              return progressCompositor.pushCommentaryProgress(payload.progressText, {
+              // Patch 0001-era behavior (production-verified): a silent
+              // NO_REPLY narration line must not render as a commentary row.
+              // 11.5 stock intentionally forwards prepared literals (locked by
+              // its compositor self-test), so the strip lives here at the
+              // feishu lane hookup, not in the shared sanitize primitive.
+              const narrationText = payload.progressText ?? "";
+              const bareNarration = narrationText.replace(/^[\s*_`~]+|[\s*_`~]+$/gu, "").trim();
+              if (/^NO_REPLY$/iu.test(bareNarration)) {
+                return progressCompositor.pushCommentaryProgress("", {
+                  itemId: payload.itemId,
+                });
+              }
+              return progressCompositor.pushCommentaryProgress(narrationText, {
                 itemId: payload.itemId,
               });
+            }
+            // 11.5 stock: the model-wait line rides the dispatcher status line
+            // (modelWaitLine) instead of the compositor item router.
+            if (payload.kind === "model-wait") {
+              if (payload.phase === "end" && !modelWaitLine) {
+                return false;
+              }
+              modelWaitLine = payload.phase === "end" ? "" : (payload.progressText ?? "");
+              if (!modelWaitLine && !buildCombinedStreamText(reasoningText, streamText)) {
+                return discardStreamingPreview().then(() => false);
+              }
+              return updateStreamingStatusLine(statusLine, payload.phase !== "end");
             }
             // Non-preamble items flow through the SDK router: it filters
             // hideFromChannelProgress/suppressChannelProgress payloads and

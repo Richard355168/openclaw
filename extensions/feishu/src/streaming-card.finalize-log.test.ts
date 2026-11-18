@@ -4,10 +4,11 @@
 // removed when empty) after the settings close. Panel finalize failures are
 // logged only — the finalize contract stays untouched.
 import type { LookupFn } from "openclaw/plugin-sdk/ssrf-runtime";
-import { withFetchPreconnect } from "openclaw/plugin-sdk/test-env";
+import { jsonResponse, withFetchPreconnect } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CardHeaderConfig } from "./send.js";
 import { FeishuStreamingSession } from "./streaming-card.js";
+import { createStreamingTokenPayload } from "./streaming-card.test-support.js";
 import { createStreamingSession, type StreamingFetchDeps } from "./streaming-card.test-support.js";
 
 type StreamingSessionState = {
@@ -23,13 +24,6 @@ type StreamingSessionState = {
 };
 
 const hermeticPublicLookup: LookupFn = async () => [{ address: "93.184.216.34", family: 4 }];
-
-function jsonResponse(payload: unknown, status = 200): Response {
-  return new Response(JSON.stringify(payload), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
 
 function createMemoryFetch(
   handler: (url: URL, body: string, method: string) => Response | Promise<Response>,
@@ -105,7 +99,7 @@ function createRecordingDeps(params?: { failPanelFinalize?: boolean }): {
   const requests: RecordedRequest[] = [];
   const deps = createMemoryFetch((url, body, method) => {
     if (url.pathname.includes("/auth/")) {
-      return jsonResponse({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 });
+      return jsonResponse(createStreamingTokenPayload());
     }
     requests.push({
       path: url.pathname,
@@ -133,7 +127,7 @@ describe("FeishuStreamingSession process-log panel", () => {
     const createBodies: string[] = [];
     const deps = createMemoryFetch((url, body, method) => {
       if (url.pathname.includes("/auth/")) {
-        return jsonResponse({ code: 0, msg: "ok", tenant_access_token: "token", expire: 7200 });
+        return jsonResponse(createStreamingTokenPayload());
       }
       if (method === "POST" && url.pathname.endsWith("/cardkit/v1/cards")) {
         createBodies.push(body);
@@ -222,7 +216,11 @@ describe("FeishuStreamingSession process-log panel", () => {
     await drainQueue(session);
     const result = await session.closeWithResult("final answer");
 
-    expect(result).toEqual({ visibleReplySent: true, content: "final answer", messageId: "om_1" });
+    expect(result).toMatchObject({
+      visibleReplySent: true,
+      content: "final answer",
+      messageIds: ["om_1"],
+    });
     expect(requests.map(({ path }) => path)).toEqual([
       "/open-apis/cardkit/v1/cards/card_log/elements/process_log_content/content",
       "/open-apis/cardkit/v1/cards/card_log/elements/content/content",
@@ -291,7 +289,11 @@ describe("FeishuStreamingSession process-log panel", () => {
     await session.appendProcessLog("🔎 Web Search", 1);
     const result = await session.closeWithResult("final answer");
 
-    expect(result).toEqual({ visibleReplySent: true, content: "final answer", messageId: "om_1" });
+    expect(result).toMatchObject({
+      visibleReplySent: true,
+      content: "final answer",
+      messageIds: ["om_1"],
+    });
     const logWrites = requests.filter(({ path }) =>
       path.endsWith("/elements/process_log_content/content"),
     );
@@ -331,7 +333,11 @@ describe("FeishuStreamingSession process-log panel", () => {
 
     const result = await session.closeWithResult("final answer");
 
-    expect(result).toEqual({ visibleReplySent: true, content: "final answer", messageId: "om_1" });
+    expect(result).toMatchObject({
+      visibleReplySent: true,
+      content: "final answer",
+      messageIds: ["om_1"],
+    });
     expect(logs.some((message) => message.includes("Process panel finalize skipped"))).toBe(true);
     expect(requests.filter(({ path }) => path.endsWith("/elements/process_log"))).toHaveLength(1);
   });
