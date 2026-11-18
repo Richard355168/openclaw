@@ -131,9 +131,7 @@ export class FeishuStreamingSession {
       init: {
         method,
         headers: {
-          Authorization: `Bearer ${
-            token ?? (await getToken(this.creds, { ...(this.deps ?? {}) }))
-          }`,
+          Authorization: `Bearer ${token ?? (await getToken(this.creds, this.deps))}`,
           "Content-Type":
             method === "PATCH" ? "application/json; charset=utf-8" : "application/json",
           "User-Agent": getFeishuUserAgent(),
@@ -569,7 +567,7 @@ export class FeishuStreamingSession {
               "Feishu streaming card finalization failed",
             )
           : (finalWriteError ?? closeError);
-      throw createFeishuPartialReplyDeliveryError(cause, result);
+      throw new FeishuStreamingFinalizationError(cause, result);
     }
     return result;
   }
@@ -750,7 +748,9 @@ export class FeishuStreamingSession {
     }
     this.closed = true;
     this.clearFlushTimer();
-    this.settleProcessLogPending();
+    // No settleProcessLogPending here: any pending rows are about to be
+    // deleted together with the whole message; on delete failure the fallback
+    // closeWithResult("") performs its own settle.
     await this.queue;
     this.settleContentFlushWaiters();
 
