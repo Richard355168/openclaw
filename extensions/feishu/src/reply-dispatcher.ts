@@ -23,6 +23,7 @@ import {
 } from "openclaw/plugin-sdk/reply-payload";
 import type { GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
 import { stripReasoningTagsFromText } from "openclaw/plugin-sdk/text-chunking";
+import { stripInlineDirectiveTagsForDelivery } from "openclaw/plugin-sdk/text-chunking";
 import type { ClawdbotConfig, OutboundIdentity, ReplyPayload, RuntimeEnv } from "../runtime-api.js";
 import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import { resolveConfiguredHttpTimeoutMs } from "./client-timeout.js";
@@ -692,12 +693,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     mode: streamMode,
     active: previewStreamingEnabled,
     seed: `${account.accountId}:${sendTarget}`,
-    // Narration preambles flow through the shared commentary lane; the 💬 lane
-    // marker is this channel's presentation choice for it. Bare text (no
-    // italics): the process-log panel reads the lane lines verbatim, and
-    // italic wrappers would break the append-only prefix growth checks.
-    commentaryLinePrefix: "💬 ",
-    commentaryItalics: false,
+    // Narration preambles no longer ride the compositor commentary lane (the
+    // lane moved in-plugin; see the onItemEvent preamble branch) — the stock
+    // progress-mode presentation parameters stay untouched.
     // 2026.10.6+ moved tool glyphs behind this compositor flag (the
     // pre-10.6 formatter inlined them); opt in so rolling tool lines carry
     // 🛠️/📖/… icons.
@@ -1604,38 +1602,62 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       onItemEvent: previewStreamingEnabled
         ? (payload: Parameters<NonNullable<GetReplyOptions["onItemEvent"]>>[0]) => {
             if (payload.kind === "preamble") {
-              // Narration text the model authors between tool calls. The shared
-              // commentary lane owns its semantics end to end — progress-status
-              // sanitization (NO_REPLY/directives stripped), cumulative
-              // identity for id-less snapshot streams, and keyed retraction on
-              // an empty update — so partial mode delegates instead of
-              // rebuilding a parallel 💬 line here.
-              // Hidden or suppressed preambles never publish; the empty
-              // update retracts any earlier commentary line for the same
-              // item, matching the SDK item router's hidden-update handling.
+              // Narration text the model authors between tool calls. The lane
+              // lives in-plugin: rows go straight to the append-only process
+              // log panel (label "Commentary" activates the builder's
+              // cumulative-growth checks), so partial mode no longer depends
+              // on the stock core opting partial modes into the compositor's
+              // commentary path.
+              // Hidden or suppressed preambles never publish; earlier rows of
+              // the same stream stay in the log — the panel is append-only,
+              // and the audit trail of what was narrated is an accepted edge.
               if (
                 payload.hideFromChannelProgress === true ||
                 payload.suppressChannelProgress === true
               ) {
-                return progressCompositor.pushCommentaryProgress("", {
-                  itemId: payload.itemId,
-                });
+                // Same-item hidden/suppressed flips retract the already-
+                // rendered commentary row (the SDK retires the preview when
+                // its last line goes away). The panel is append-only for
+                // *content*, not for keyed retirement: the row is removed
+                // from the panel state and the next flush PATCHes the
+                // shorter log.
+                if (payload.itemId) {
+                  processLog.retract([`commentary:${payload.itemId}`]);
+                  // Mirror the compositor's renderAfterRetraction contract:
+                  // when nothing else holds the preview alive (no answer
+                  // text yet), the retiring panel releases the card; with
+                  // answer text on screen a shorter-log PATCH refreshes it.
+                  if (!streamText && !reasoningText) {
+                    return discardStreamingPreview().then(() => false);
+                  }
+                  flushProcessLog();
+                }
+                return false;
               }
-              // Patch 0001-era behavior (production-verified): a silent
-              // NO_REPLY narration line must not render as a commentary row.
-              // 11.5 stock intentionally forwards prepared literals (locked by
-              // its compositor self-test), so the strip lives here at the
-              // feishu lane hookup, not in the shared sanitize primitive.
+              // A silent NO_REPLY narration line must not render as a
+              // commentary row. 11.5 stock intentionally forwards prepared
+              // literals (locked by its compositor self-test), so the strip
+              // lives here at the feishu hookup, not in the shared sanitize
+              // primitive.
               const narrationText = payload.progressText ?? "";
-              const bareNarration = narrationText.replace(/^[\s*_`~]+|[\s*_`~]+$/gu, "").trim();
-              if (/^NO_REPLY$/iu.test(bareNarration)) {
-                return progressCompositor.pushCommentaryProgress("", {
-                  itemId: payload.itemId,
-                });
+              const bareNarration = stripInlineDirectiveTagsForDelivery(narrationText).text.trim();
+              if (
+                !bareNarration ||
+                /^NO_REPLY$/iu.test(bareNarration.replace(/^[\s*_`~]+|[\s*_`~]+$/gu, "").trim())
+              ) {
+                return false;
               }
-              return progressCompositor.pushCommentaryProgress(narrationText, {
-                itemId: payload.itemId,
-              });
+              processLog.record([
+                {
+                  ...(payload.itemId ? { id: `commentary:${payload.itemId}` } : {}),
+                  text: `💬 ${bareNarration}`,
+                  kind: "item",
+                  label: "Commentary",
+                },
+              ]);
+              startStreaming();
+              flushProcessLog();
+              return true;
             }
             // 11.5 stock: the model-wait line rides the dispatcher status line
             // (modelWaitLine) instead of the compositor item router.
