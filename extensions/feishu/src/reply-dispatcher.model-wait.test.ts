@@ -74,7 +74,8 @@ it.each(["", "Earlier answer."])(
         });
         await vi.advanceTimersByTimeAsync(160);
         expect(publishedTexts.at(-1)).toContain(previousText);
-        expect(publishedTexts.at(-1)).toContain("Looking up records");
+        // Patch 0006 v6: tool rows ride the process-log panel element, not the
+        // answer content PUT, so "Looking up records" never lands here.
       }
       const waitText = "Waiting for the local model to respond";
       await reply.onItemEvent?.({ ...waitItem, phase: "update", progressText: waitText });
@@ -90,7 +91,9 @@ it.each(["", "Earlier answer."])(
       await vi.advanceTimersByTimeAsync(160);
       if (previousText) {
         expect(publishedTexts.at(-1)).toContain(previousText);
-        expect(publishedTexts.at(-1)).toContain("Looking up records");
+        // Patch 0006 v6: tool rows live on the process-log panel and the
+        // answer content slot is retired (statusLine cleared on updates), so
+        // the retracted combined text carries only the committed answer.
         expect(publishedTexts.at(-1)).not.toContain(waitText);
         expect(message.delete).not.toHaveBeenCalled();
       } else {

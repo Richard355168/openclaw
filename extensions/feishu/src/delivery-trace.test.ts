@@ -426,13 +426,10 @@ function setupPdfTrace(recorder: WireRecorder) {
   };
 }
 
-function setupFeishuTrace(recorder: WireRecorder, scenario: DeliveryTraceScenarioName) {
-
 function setupFeishuTrace(
   recorder: WireRecorder,
   scenario: DeliveryTraceScenarioName,
   overrides?: {
-    scenarioName?: string;
     channel?: Record<string, unknown>;
     agentBlockDefault?: "on" | "off";
   },
