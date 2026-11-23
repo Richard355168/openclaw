@@ -353,15 +353,13 @@ export class FeishuStreamingSession {
     }
     try {
       await this.putElement(
-        replace ? "content" : "content/content",
-        replace ? "replace" : "update",
-        replace ? "Replace card content" : "Update card content",
+        "content/content",
+        "update",
+        "Update card content",
         (sequence) => ({
-          ...(replace
-            ? { element: JSON.stringify({ tag: "markdown", content: text, element_id: "content" }) }
-            : { content: text }),
+          content: text,
           sequence,
-          uuid: `${replace ? "r" : "s"}_${this.state!.cardId}_${sequence}`,
+          uuid: `s_${this.state!.cardId}_${sequence}`,
         }),
       );
       return true;
@@ -587,7 +585,6 @@ export class FeishuStreamingSession {
     return result;
   }
 
-  async discard(): Promise<FeishuReplyDeliveryResult> {
   // Enqueues one append of the process log element. The text is the FULL
   // cumulative log and only ever grows (append-only builder), so CardKit's
   // typewriter renders just the new suffix; a rejected write keeps the text
