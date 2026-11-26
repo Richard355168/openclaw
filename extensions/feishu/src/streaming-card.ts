@@ -610,9 +610,13 @@ export class FeishuStreamingSession {
     }, delayMs);
   }
 
-  // One queued process-log PUT against the confirmed Sent text. Failures keep
-  // the text desired: the next append retries it (and the 300309 self-heal on
-  // the answer channel re-arms the window).
+  // One queued process-log PUT against the confirmed Sent text, routed
+  // through putElement so a closed streaming window reopens on the same card
+  // before the one retry. During pure-tool phases the answer channel is
+  // silent and this PUT is the only live writer, so it must be able to
+  // re-arm the window itself (2026-11-26 lesson: the old direct
+  // requestCardKit bypass left the panel frozen when the window expired).
+  // Failures keep the text desired: the next append retries it.
   private enqueueProcessLogWrite(operation: string, options?: { allowClosed?: boolean }): void {
     this.queue = this.queue.then(async () => {
       // The settle variant runs inside closeWithResult/discard after the
@@ -627,19 +631,16 @@ export class FeishuStreamingSession {
       if (!desired || desired === this.state.processLogSent) {
         return;
       }
-      this.state.sequence += 1;
       try {
-        await this.requestCardKit(
-          `/${this.state.cardId}/elements/process_log_content/content`,
+        await this.putElement(
+          "process_log_content/content",
           operation,
-          "PUT",
-          () => ({
+          "Append process log",
+          (sequence) => ({
             content: desired,
-            sequence: this.state!.sequence,
-            uuid: `p_${this.state!.cardId}_${this.state!.sequence}`,
+            sequence,
+            uuid: `p_${this.state!.cardId}_${sequence}`,
           }),
-          (response, auditContext) =>
-            assertSuccessfulCardKitResponse(response, auditContext, "Append process log"),
         );
         this.state.processLogSent = desired;
       } catch (error) {

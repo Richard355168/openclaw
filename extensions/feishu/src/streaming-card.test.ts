@@ -1039,6 +1039,49 @@ describe("FeishuStreamingSession", () => {
     ]);
   });
 
+  it("reopens the streaming window for a process log append on a closed card", async () => {
+    const requests: string[] = [];
+    let streaming = false;
+    const deps = createMemoryFetch((url, body) => {
+      if (url.pathname.includes("/auth/")) {
+        return jsonResponse(createStreamingTokenPayload());
+      }
+      const { sequence, settings, content } = JSON.parse(body);
+      const mode = settings && JSON.parse(settings).config.streaming_mode;
+      requests.push(`${sequence} ${settings ? `streaming_mode=${mode}` : content}`);
+      if (settings) {
+        streaming = mode;
+      } else if (!streaming) {
+        return jsonResponse({ code: 200_850, msg: "card streaming timeout" }, 400);
+      }
+      return jsonResponse({ code: 0, msg: "ok" });
+    });
+    const session = createActiveSession(deps, { cardId: "card_window" });
+
+    session.appendProcessLog("tool one", 1);
+    await vi.waitFor(() => {
+      expect(requests).toEqual([
+        "2 tool one",
+        "3 streaming_mode=false",
+        "4 streaming_mode=true",
+        "5 tool one",
+      ]);
+    });
+
+    // The accepted write advanced Sent; a healthy window takes the next
+    // append straight through with no second reopen (no settings rows).
+    session.appendProcessLog("tool one\ntool two", 2);
+    await vi.waitFor(() => {
+      expect(requests).toEqual([
+        "2 tool one",
+        "3 streaming_mode=false",
+        "4 streaming_mode=true",
+        "5 tool one",
+        "6 tool one\ntool two",
+      ]);
+    });
+  });
+
 });
 
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
