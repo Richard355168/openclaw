@@ -185,7 +185,9 @@ it("replaces obsolete previews with the final reply during delayed native CardKi
     expect(requests.at(-2)).toMatchObject({ method: "DELETE" });
     expect(String(requests.at(-2)?.path)).toMatch(/\/elements\/process_log$/);
     expect(String(requests.at(-1)?.path)).toMatch(/\/elements\/process_log_divider$/);
-    return { contents, first, final };
+    // The final reply replaces the obsolete streaming previews (stock
+    // contract; a rejected final write would leave the stale preview text).
+    expect(contents).toEqual([first, final]);
   } finally {
     releaseFirstWrite.resolve();
     await idle?.catch(() => {});

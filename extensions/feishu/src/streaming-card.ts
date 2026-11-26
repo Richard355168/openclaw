@@ -23,7 +23,6 @@ import {
   resolveApiBase,
   type Credentials,
   type FeishuStreamingDeps,
-  type FeishuStreamingFetch,
   shouldPushStreamingUpdate,
   STREAMING_UPDATE_THROTTLE_MS,
   truncateSummary,
@@ -96,8 +95,6 @@ export class FeishuStreamingSession {
   private contentFlushWaiters: Array<{ text: string; resolve: (ok: boolean) => void }> = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private updateThrottleMs = STREAMING_UPDATE_THROTTLE_MS;
-  private fetchImpl?: FeishuStreamingFetch;
-  private lookupFn?: LookupFn;
   private deps?: FeishuStreamingDeps;
   // Process-log throttle state (patch 0006 v2): the timer mirrors the answer
   // channel's flushTimer; the desired text itself lives on the card state
